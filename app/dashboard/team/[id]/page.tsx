@@ -1,10 +1,10 @@
 'use client';
 
-import { useParams } from 'react-router-dom';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { mockUsers, mockTasks } from '@/lib/mock-data';
+import { getUserById, getTasks } from '@/lib/api';
 import {
   calculateTaskWeight,
   getWorkloadStatus,
@@ -25,7 +25,6 @@ import {
   AlertCircle,
   ChevronRight,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
 
 const statusIcons: Record<TaskStatus, typeof Circle> = {
   new: Circle,
@@ -45,8 +44,52 @@ export default function MemberDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
 
-  const member = mockUsers.find((u) => u.id === id);
-  const memberTasks = mockTasks.filter((t) => t.assignedMemberId === id);
+  const [member, setMember] = useState<any | null>(null);
+  const [memberTasks, setMemberTasks] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!id) return;
+    let active = true;
+
+    async function loadMemberData() {
+      setLoading(true);
+      setError(null);
+      try {
+        const userRes = await getUserById(id!);
+        if (!active) return;
+
+        const memberData = Array.isArray(userRes) ? userRes[0] : userRes?.data || userRes;
+        setMember(memberData);
+
+        const tasksRes = await getTasks();
+        if (!active) return;
+
+        const tasksData = Array.isArray(tasksRes) ? tasksRes : tasksRes?.data || [];
+        setMemberTasks(tasksData.filter((t: any) => String(t.assignedMemberId) === String(id)));
+      } catch (err: any) {
+        setError(err?.message || 'Unable to load member details.');
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+
+    loadMemberData();
+    return () => {
+      active = false;
+    };
+  }, [id]);
+
+  if (!id) return null;
+
+  if (loading) {
+    return <div className="p-8 text-center text-muted-foreground">Loading member data...</div>;
+  }
+
+  if (error) {
+    return <div className="p-8 text-center text-destructive">Error loading member: {error}</div>;
+  }
 
   if (!member) {
     return (
@@ -104,7 +147,7 @@ export default function MemberDetailPage() {
           <div className="flex items-center gap-4">
             <div className="h-14 w-14 rounded-full bg-primary/20 flex items-center justify-center">
               <span className="text-xl font-medium text-primary">
-                {member.name.charAt(0)}
+                {member?.name ? String(member.name).charAt(0) : '?'}
               </span>
             </div>
             <div>
@@ -211,19 +254,20 @@ export default function MemberDetailPage() {
             <CardContent>
               <div className="space-y-3">
                 {memberTasks.map((task) => {
-                  const StatusIcon = statusIcons[task.status];
+                  const taskStatus = task.status as TaskStatus;
+                  const StatusIcon = statusIcons[taskStatus];
                   const weight = calculateTaskWeight(task);
 
                   return (
                     <Link
                       key={task.id}
-                      href={`/dashboard/tasks/${task.id}`}
+                      to={`/dashboard/tasks/${task.id}`}
                       className="block p-4 rounded-lg border border-border bg-secondary/30 hover:bg-secondary/50 transition-colors"
                     >
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex items-start gap-3 flex-1">
                           <StatusIcon
-                            className={`h-5 w-5 mt-0.5 ${statusColors[task.status]}`}
+                            className={`h-5 w-5 mt-0.5 ${statusColors[taskStatus]}`}
                           />
                           <div className="flex-1">
                             <div className="flex items-center gap-2">

@@ -36,13 +36,15 @@ export default function RegisterPage() {
 
     setIsLoading(true);
     // Register as member by default - admin can change role later
-    const success = await register(name, email, password, 'member');
-    setIsLoading(false);
-
-    if (success) {
-      navigate('/dashboard');
-    } else {
-      setError('Registration failed. Email may already be in use.');
+    try {
+      const success = await register(name, email, password, 'member');
+      setIsLoading(false);
+      if (success) {
+        navigate('/');
+      }
+    } catch (err: any) {
+      setIsLoading(false);
+      setError(err?.message || 'Registration failed. Email may already be in use.');
     }
   };
 

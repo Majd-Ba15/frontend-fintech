@@ -1,13 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { FieldGroup, Field, FieldLabel } from '@/components/ui/field';
-import { mockTeams } from '@/lib/mock-data';
 import { UserRole } from '@/lib/types';
+import * as api from '@/lib/api';
 import { ArrowLeft, UserPlus, Shield, UserCog, User as UserIcon } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -16,7 +16,10 @@ export default function NewUserPage() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [selectedRole, setSelectedRole] = useState<UserRole>('member');
-  const [selectedTeam, setSelectedTeam] = useState('team-1');
+  const [selectedTeam, setSelectedTeam] = useState('');
+  const [teams, setTeams] = useState<any[]>([]);
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const roles: { value: UserRole; label: string; description: string; icon: typeof Shield }[] = [
@@ -40,23 +43,64 @@ export default function NewUserPage() {
     },
   ];
 
+  const [error, setError] = useState<string | null>(null);
+  const [loadingTeams, setLoadingTeams] = useState(true);
+
+  useEffect(() => {
+    async function loadTeams() {
+      try {
+        const response = await api.getTeams();
+        const loaded = Array.isArray(response) ? response : response?.data || [];
+        setTeams(loaded);
+      } catch (err) {
+        console.error('Failed to load teams', err);
+        setTeams([]);
+      } finally {
+        setLoadingTeams(false);
+      }
+    }
+
+    loadTeams();
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError(null);
     setIsSubmitting(true);
 
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    if (password !== confirmPassword) {
+      setError('Passwords do not match');
+      setIsSubmitting(false);
+      return;
+    }
 
-    // In a real app, this would create the user in the database
-    console.log('New User:', {
-      name,
-      email,
-      role: selectedRole,
-      teamId: selectedTeam,
-    });
+    try {
+      const payload: any = {
+        fullName: name,
+        email,
+        role: selectedRole,
+      };
 
-    setIsSubmitting(false);
-    navigate('/dashboard/users');
+      // add password fields if set (uncomment these if backend requires them)
+      if (password) payload.password = password;
+      if (confirmPassword) payload.confirmPassword = confirmPassword;
+
+      // assign teamId if selected
+      if (selectedTeam) {
+        const maybeTeamId = Number(selectedTeam);
+        payload.teamId = !Number.isNaN(maybeTeamId) ? maybeTeamId : selectedTeam;
+      }
+
+      await api.createUser(payload);
+      navigate('/dashboard/users');
+    } catch (err: any) {
+      console.error('Create user failed', err);
+      const message =
+        err?.body?.message || err?.message || 'Failed to create user';
+      setError(message);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -74,6 +118,12 @@ export default function NewUserPage() {
           <p className="text-muted-foreground">Create a new user account</p>
         </div>
       </div>
+
+      {error && (
+        <div className="rounded-lg border border-destructive bg-destructive/10 p-4 text-destructive">
+          {error}
+        </div>
+      )}
 
       <form onSubmit={handleSubmit}>
         <Card className="bg-card border-border max-w-2xl">
@@ -113,15 +163,42 @@ export default function NewUserPage() {
               </Field>
 
               <Field>
-                <FieldLabel htmlFor="team">Assign to Team</FieldLabel>
+                <FieldLabel htmlFor="password">Password</FieldLabel>
+                <Input
+                  id="password"
+                  type="password"
+                  placeholder="Enter password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  className="bg-secondary border-border"
+                />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="confirmPassword">Confirm Password</FieldLabel>
+                <Input
+                  id="confirmPassword"
+                  type="password"
+                  placeholder="Confirm password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  required
+                  className="bg-secondary border-border"
+                />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="team">Assign to Team (optional)</FieldLabel>
                 <select
                   id="team"
                   value={selectedTeam}
                   onChange={(e) => setSelectedTeam(e.target.value)}
-                  required
                   className="w-full h-10 px-3 rounded-md border border-border bg-secondary text-foreground"
                 >
-                  {mockTeams.map((team) => (
+                  <option value="">No team assigned</option>
+                  {loadingTeams && <option value="" disabled>Loading teams...</option>}
+                  {teams.map((team) => (
                     <option key={team.id} value={team.id}>
                       {team.name}
                     </option>

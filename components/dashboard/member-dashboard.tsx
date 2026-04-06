@@ -1,10 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { mockTasks, mockChangeRequests } from '@/lib/mock-data';
 import { useAuth } from '@/lib/auth-context';
+import { acknowledgeTask, getMyChangeRequests, getMyTasks, updateTaskStatus } from '@/lib/api';
 import { calculateTaskWeight, Task, TaskStatus } from '@/lib/types';
 import {
   CheckSquare,
@@ -16,8 +16,7 @@ import {
   AlertCircle,
   ChevronRight,
   FileText,
-  Play,
-  Check,
+  PauseCircle,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -45,11 +44,52 @@ const statusBgColors: Record<TaskStatus, string> = {
 export function MemberDashboard() {
   const { user } = useAuth();
   const [statusFilter, setStatusFilter] = useState<TaskStatus | 'all'>('all');
-  const [tasks, setTasks] = useState(mockTasks);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [requests, setRequests] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Get tasks assigned to this member
   const myTasks = tasks.filter((t) => t.assignedMemberId === user?.id);
-  const myRequests = mockChangeRequests.filter((r) => r.requestedBy === user?.id);
+  const myRequests = requests.filter((r) => r.requestedBy === user?.id);
+
+  useEffect(() => {
+    if (!user) return;
+    let active = true;
+
+    async function loadData() {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const [tasksRes, requestsRes] = await Promise.all([getMyTasks(), getMyChangeRequests()]);
+
+        if (!active) return;
+
+        setTasks(Array.isArray(tasksRes) ? tasksRes : tasksRes.data ?? []);
+        setRequests(Array.isArray(requestsRes) ? requestsRes : requestsRes.data ?? []);
+      } catch (err: any) {
+        if (!active) return;
+        setError(err?.message || 'Unable to load member dashboard data.');
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+
+    loadData();
+
+    return () => {
+      active = false;
+    };
+  }, [user]);
+
+  if (loading) {
+    return <div className="p-6 text-center text-muted-foreground">Loading member dashboard...</div>;
+  }
+
+  if (error) {
+    return <div className="p-6 text-center text-destructive">Error: {error}</div>;
+  }
 
   // Filter tasks
   const filteredTasks =
@@ -73,21 +113,42 @@ export function MemberDashboard() {
   // Calculate progress percentage
   const progressPercentage = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
-  const handleAcknowledge = (taskId: string) => {
-    setTasks(prevTasks =>
-      prevTasks.map(task =>
-        task.id === taskId ? { ...task, acknowledged: true } : task
-      )
-    );
+  const handleAcknowledge = async (taskId: string) => {
+    try {
+      await acknowledgeTask(taskId);
+      setTasks((prevTasks) =>
+        prevTasks.map((task) =>
+          task.id === taskId
+            ? { ...task, acknowledged: true, acknowledgedAt: new Date().toISOString() }
+            : task
+        )
+      );
+    } catch (err: any) {
+      console.error('Failed to acknowledge task', err);
+      setError(err?.message || 'Unable to acknowledge task.');
+    }
   };
 
-  const handleStatusChange = (taskId: string, newStatus: TaskStatus) => {
-    setTasks(prevTasks =>
-      prevTasks.map(task =>
-        task.id === taskId ? { ...task, status: newStatus } : task
-      )
-    );
+  const handleStatusChange = async (taskId: string, newStatus: TaskStatus) => {
+    try {
+      await updateTaskStatus(taskId, newStatus);
+      setTasks((prevTasks) =>
+        prevTasks.map((task) =>
+          task.id === taskId ? { ...task, status: newStatus, updatedAt: new Date().toISOString() } : task
+        )
+      );
+    } catch (err: any) {
+      console.error('Failed to update task status', err);
+      setError(err?.message || 'Unable to update task status.');
+    }
   };
+
+  const statusOptions: Array<{ value: TaskStatus; label: string; icon: typeof Circle }> = [
+    { value: 'new', label: 'New', icon: Circle },
+    { value: 'in_progress', label: 'In Progress', icon: Loader2 },
+    { value: 'blocked', label: 'Blocked', icon: PauseCircle },
+    { value: 'done', label: 'Done', icon: CheckCircle2 },
+  ];
 
   const getTaskPriorityColor = (priority: string) => {
     switch (priority) {
@@ -99,39 +160,6 @@ export function MemberDashboard() {
         return 'bg-chart-1/20 text-chart-1';
       default:
         return 'bg-muted text-muted-foreground';
-    }
-  };
-
-  const getNextStatus = (currentStatus: TaskStatus): TaskStatus | null => {
-    switch (currentStatus) {
-      case 'new':
-        return 'in_progress';
-      case 'in_progress':
-        return 'done';
-      default:
-        return null;
-    }
-  };
-
-  const getStatusActionLabel = (currentStatus: TaskStatus): string => {
-    switch (currentStatus) {
-      case 'new':
-        return 'Start';
-      case 'in_progress':
-        return 'Complete';
-      default:
-        return '';
-    }
-  };
-
-  const getStatusActionIcon = (currentStatus: TaskStatus) => {
-    switch (currentStatus) {
-      case 'new':
-        return Play;
-      case 'in_progress':
-        return Check;
-      default:
-        return null;
     }
   };
 
@@ -296,8 +324,7 @@ export function MemberDashboard() {
                 {filteredTasks.map((task) => {
                   const StatusIcon = statusIcons[task.status];
                   const weight = calculateTaskWeight(task);
-                  const nextStatus = getNextStatus(task.status);
-                  const ActionIcon = getStatusActionIcon(task.status);
+                  const isBlockedUntilAcknowledged = !task.acknowledged;
 
                   return (
                     <div
@@ -337,22 +364,13 @@ export function MemberDashboard() {
                             {task.priority}
                           </span>
                           {!task.acknowledged && (
-                            <span className="px-2 py-1 rounded text-xs font-medium bg-amber-500/20 text-amber-400">
-                              Unack
-                            </span>
-                          )}
-                          {nextStatus && ActionIcon && (
                             <Button
                               size="sm"
-                              variant={task.status === 'in_progress' ? 'default' : 'outline'}
-                              className={task.status === 'in_progress' ? 'bg-emerald-600 hover:bg-emerald-700' : ''}
-                              onClick={(e) => {
-                                e.preventDefault();
-                                handleStatusChange(task.id, nextStatus);
-                              }}
+                              variant="outline"
+                              className="border-amber-500/50 text-amber-500 hover:text-amber-600"
+                              onClick={() => handleAcknowledge(task.id)}
                             >
-                              <ActionIcon className="h-4 w-4 mr-1" />
-                              {getStatusActionLabel(task.status)}
+                              Acknowledge
                             </Button>
                           )}
                           <Link to={`/dashboard/tasks/${task.id}`}>
@@ -361,6 +379,32 @@ export function MemberDashboard() {
                             </Button>
                           </Link>
                         </div>
+                      </div>
+
+                      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border/60 pt-4">
+                        {statusOptions.map((statusOption) => {
+                          const OptionIcon = statusOption.icon;
+                          const isActive = task.status === statusOption.value;
+                          return (
+                            <Button
+                              key={statusOption.value}
+                              type="button"
+                              size="sm"
+                              variant={isActive ? 'default' : 'outline'}
+                              className={isActive ? 'bg-primary text-primary-foreground' : ''}
+                              disabled={isBlockedUntilAcknowledged || isActive}
+                              onClick={() => handleStatusChange(task.id, statusOption.value)}
+                            >
+                              <OptionIcon className="mr-1 h-4 w-4" />
+                              {statusOption.label}
+                            </Button>
+                          );
+                        })}
+                        {isBlockedUntilAcknowledged && (
+                          <span className="text-xs text-amber-500">
+                            Acknowledge this task before changing its status.
+                          </span>
+                        )}
                       </div>
                     </div>
                   );

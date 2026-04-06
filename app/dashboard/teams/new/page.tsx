@@ -1,12 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { FieldGroup, Field, FieldLabel } from '@/components/ui/field';
-import { mockUsers } from '@/lib/mock-data';
+import { getUsers, createTeam } from '@/lib/api';
 import { ArrowLeft, Users, Check } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -15,10 +15,17 @@ export default function NewTeamPage() {
   const [name, setName] = useState('');
   const [selectedLeader, setSelectedLeader] = useState('');
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  const [users, setUsers] = useState<any[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const teamLeaders = mockUsers.filter((u) => u.role === 'team_leader');
-  const members = mockUsers.filter((u) => u.role === 'member');
+  const teamLeaders = users.filter((u) => {
+    const role = String(u?.role || '').toLowerCase();
+    return role === 'team_leader' || role === 'team leader' || role === 'leader' || role === 'admin';
+  });
+  const members = users.filter((u) => {
+    const role = String(u?.role || '').toLowerCase();
+    return role === 'member' || role === 'team_member' || role === 'team member';
+  });
 
   const toggleMember = (memberId: string) => {
     setSelectedMembers((prev) =>
@@ -26,21 +33,34 @@ export default function NewTeamPage() {
     );
   };
 
+  useEffect(() => {
+    async function loadUsers() {
+      try {
+        const usersRes = await getUsers();
+        const loaded = Array.isArray(usersRes) ? usersRes : usersRes?.data || [];
+        setUsers(loaded);
+      } catch (err) {
+        console.error('Failed to load users for team creation', err);
+      }
+    }
+    loadUsers();
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
 
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
-    console.log('New Team:', {
-      name,
-      leaderId: selectedLeader,
-      memberIds: selectedMembers,
-    });
-
-    setIsSubmitting(false);
-    navigate('/dashboard/teams');
+    try {
+      await createTeam({
+        name,
+        teamLeaderId: selectedLeader,
+        memberIds: selectedMembers,
+      });
+      navigate('/dashboard/teams');
+    } catch (err) {
+      console.error('Create team failed', err);
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -93,9 +113,14 @@ export default function NewTeamPage() {
                   className="w-full h-10 px-3 rounded-md border border-border bg-secondary text-foreground"
                 >
                   <option value="">Select a team leader...</option>
+                  {teamLeaders.length === 0 && (
+                    <option value="" disabled>
+                      No team leader found (invite a leader first)
+                    </option>
+                  )}
                   {teamLeaders.map((leader) => (
                     <option key={leader.id} value={leader.id}>
-                      {leader.name}
+                      {leader.name || leader.email || leader.id}
                     </option>
                   ))}
                 </select>
@@ -130,7 +155,7 @@ export default function NewTeamPage() {
                                 : 'text-muted-foreground'
                             }`}
                           >
-                            {member.name.charAt(0)}
+                            {member?.name ? member.name.charAt(0) : '?'}
                           </span>
                         </div>
                         <div>

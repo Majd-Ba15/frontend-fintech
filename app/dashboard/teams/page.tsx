@@ -1,14 +1,119 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { mockUsers, mockTeams, mockTasks } from '@/lib/mock-data';
+import { getUsers, getTeams, getTasks, deleteTeam } from '@/lib/api';
 import { Plus, Building2, Users, Edit, Trash2, ChevronRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 export default function TeamsPage() {
+  const [users, setUsers] = useState<any[]>([]);
+  const [teams, setTeams] = useState<any[]>([]);
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const normalizeUsers = (payload: any): any[] => {
+    const usersArr = Array.isArray(payload) ? payload : payload?.data || [];
+    return usersArr.map((u: any) => ({
+      id: String(u.id || u.userId || '').trim(),
+      name: u.name || u.fullName || u.username || u.email || 'Unknown',
+      email: u.email || u.emailAddress || '',
+      role: String(u.role || '').toLowerCase(),
+      teamId: String(u.teamId || u.team?.id || '').trim(),
+    }));
+  };
+
+  const normalizeTeams = (payload: any): any[] => {
+    const teamsArr = Array.isArray(payload) ? payload : payload?.data || [];
+    return teamsArr.map((t: any) => ({
+      id: String(t.id || t.teamId || '').trim(),
+      name: t.name || t.teamName || 'Unnamed Team',
+      leaderId: String(t.leaderId || t.teamLeaderId || '').trim(),
+      memberIds: Array.isArray(t.memberIds)
+        ? t.memberIds.map((id: any) => String(id).trim())
+        : Array.isArray(t.members)
+        ? t.members.map((m: any) => String(m.id || m.userId || m).trim())
+        : [],
+    }));
+  };
+
+  const normalizeTasks = (payload: any): any[] => {
+    const tasksArr = Array.isArray(payload) ? payload : payload?.data || [];
+    return tasksArr.map((t: any) => ({
+      id: String(t.id || t.taskId || '').trim(),
+      assignedMemberId: String(t.assignedMemberId || t.userId || '').trim(),
+      status: String(t.status || '').toLowerCase(),
+      ...t,
+    }));
+  };
+
+  const loadData = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [usersRes, teamsRes, tasksRes] = await Promise.allSettled([getUsers(), getTeams(), getTasks()]);
+
+      const resolvedUsers = usersRes.status === 'fulfilled' ? normalizeUsers(usersRes.value) : [];
+      const resolvedTeams = teamsRes.status === 'fulfilled' ? normalizeTeams(teamsRes.value) : [];
+      const resolvedTasks = tasksRes.status === 'fulfilled' ? normalizeTasks(tasksRes.value) : [];
+
+      setUsers(resolvedUsers);
+      setTeams(resolvedTeams);
+      setTasks(resolvedTasks);
+    } catch (e) {
+      console.error('Failed loading teams data', e);
+      setError('Unable to load teams data.');
+      setUsers([]);
+      setTeams([]);
+      setTasks([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const removeTeam = async (teamId: string) => {
+    try {
+      const apiTeamId = !Number.isNaN(Number(teamId)) ? String(Number(teamId)) : teamId;
+      await deleteTeam(apiTeamId);
+
+      setTeams((prev) => prev.filter((t) => String(t.id) !== String(teamId)));
+      setUsers((prev) =>
+        prev.map((u) =>
+          String(u.teamId) === String(teamId)
+            ? { ...u, teamId: '' }
+            : u
+        )
+      );
+      await loadData();
+    } catch (err: any) {
+      console.error('Failed to delete team', err);
+      const message = err?.body?.message || err?.message || 'Failed to delete team.';
+      setError(message);
+    }
+  };
+
+  const displayedTeams = teams;
+  const displayedUsers = users;
+  const displayedTasks = tasks;
+
   return (
     <div className="space-y-6">
+      {loading && (
+        <div className="rounded-lg border border-border bg-card p-4 text-center text-muted-foreground">
+          Loading teams...
+        </div>
+      )}
+      {error && (
+        <div className="rounded-lg border border-destructive bg-destructive/10 p-4 text-center text-destructive">
+          {error}
+        </div>
+      )}
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
@@ -27,11 +132,36 @@ export default function TeamsPage() {
 
       {/* Teams Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {mockTeams.map((team) => {
-          const leader = mockUsers.find((u) => u.id === team.leaderId);
-          const members = mockUsers.filter((u) => team.memberIds.includes(u.id));
-          const teamTasks = mockTasks.filter((t) => team.memberIds.includes(t.assignedMemberId));
-          const activeTasks = teamTasks.filter((t) => t.status !== 'done');
+        {displayedTeams.map((team) => {
+          const normalizedTeamId = String(team.id || '').trim();
+          const normalizedLeaderId = String(team.leaderId || '').trim();
+          const teamMemberIds = Array.isArray(team.memberIds)
+            ? team.memberIds.map((id: any) => String(id || '').trim())
+            : [];
+
+          const leader =
+            displayedUsers.find((u) => String(u.id).trim() === normalizedLeaderId) ||
+            displayedUsers.find(
+              (u) =>
+                String(u.teamId).trim() === normalizedTeamId &&
+                ['team_leader', 'leader', 'admin'].includes(String(u.role).toLowerCase())
+            );
+
+          const members = displayedUsers.filter((u) => {
+            const uid = String(u.id || '').trim();
+            const teamId = String(u.teamId || '').trim();
+            return (
+              teamMemberIds.includes(uid) ||
+              teamId === normalizedTeamId
+            );
+          });
+
+          const teamTasks = displayedTasks.filter((t) => {
+            const assigned = String(t.assignedMemberId || '').trim();
+            return members.some((m) => String(m.id).trim() === assigned);
+          });
+
+          const activeTasks = teamTasks.filter((t) => String(t.status || '').toLowerCase() !== 'done');
 
           return (
             <Card key={team.id} className="bg-card border-border">
@@ -47,10 +177,17 @@ export default function TeamsPage() {
                     </div>
                   </div>
                   <div className="flex gap-1">
-                    <Button variant="ghost" size="sm">
-                      <Edit className="h-4 w-4" />
-                    </Button>
-                    <Button variant="ghost" size="sm" className="text-destructive">
+                    <Link to={`/dashboard/team/${team.id}`}>
+                      <Button variant="ghost" size="sm">
+                        <Edit className="h-4 w-4" />
+                      </Button>
+                    </Link>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-destructive"
+                      onClick={() => removeTeam(team.id)}
+                    >
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
@@ -63,7 +200,7 @@ export default function TeamsPage() {
                   <div className="flex items-center gap-3 p-3 rounded-lg bg-secondary/50">
                     <div className="h-8 w-8 rounded-full bg-chart-2/20 flex items-center justify-center">
                       <span className="text-sm font-medium text-chart-2">
-                        {leader?.name?.charAt(0)}
+                        {leader?.name ? leader.name.charAt(0) : '?'}
                       </span>
                     </div>
                     <div>
@@ -107,7 +244,7 @@ export default function TeamsPage() {
                           <span className="text-sm text-foreground">{member.name}</span>
                         </div>
                         <span className="text-xs text-muted-foreground">
-                          {mockTasks.filter((t) => t.assignedMemberId === member.id).length} tasks
+                          {displayedTasks.filter((t) => t.assignedMemberId === member.id).length} tasks
                         </span>
                       </div>
                     ))}
@@ -122,17 +259,19 @@ export default function TeamsPage() {
                   </div>
                 </div>
 
-                <Button variant="outline" className="w-full">
-                  View Team Details
-                  <ChevronRight className="h-4 w-4 ml-2" />
-                </Button>
+                <Link to={`/dashboard/team/${team.id}`} className="w-full">
+                  <Button variant="outline" className="w-full">
+                    View Team Details
+                    <ChevronRight className="h-4 w-4 ml-2" />
+                  </Button>
+                </Link>
               </CardContent>
             </Card>
           );
         })}
       </div>
 
-      {mockTeams.length === 0 && (
+      {displayedTeams.length === 0 && (
         <Card className="bg-card border-border">
           <CardContent className="p-12 text-center">
             <Building2 className="h-12 w-12 mx-auto text-muted-foreground mb-4" />

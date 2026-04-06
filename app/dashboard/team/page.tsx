@@ -1,10 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { mockUsers, mockTasks, mockTeams, getCurrentWeekDates, getNextWeekDates } from '@/lib/mock-data';
+import { getCurrentWeekDates, getNextWeekDates } from '@/lib/mock-data';
 import { useAuth } from '@/lib/auth-context';
+import { getTeams, getTasks, getTeamById, getUserById } from '@/lib/api';
+import { extractArray, getTeamLeaderId, getTeamMemberIds, getTeamMembers } from '@/lib/utils';
 import {
   calculateTaskWeight,
   getWorkloadStatus,
@@ -19,35 +21,146 @@ type WeekView = 'this_week' | 'next_week';
 export default function TeamPage() {
   const { user } = useAuth();
   const [weekView, setWeekView] = useState<WeekView>('this_week');
+  const [teams, setTeams] = useState<any[]>([]);
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [team, setTeam] = useState<any | null>(null);
+  const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [weekTasks, setWeekTasks] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Get the team this leader manages
-  const team = mockTeams.find((t) => t.leaderId === user?.id);
-  const teamMemberIds = team?.memberIds || [];
-  const teamMembers = mockUsers.filter((u) => teamMemberIds.includes(u.id));
+  useEffect(() => {
+    if (!user) return;
+    let active = true;
 
-  // Get week dates
+    async function loadTeamData() {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const [teamsRes, tasksRes] = await Promise.allSettled([
+          getTeams(),
+          getTasks(),
+        ]);
+
+        if (!active) return;
+
+        const teamsData = teamsRes.status === 'fulfilled' ? extractArray<any>(teamsRes.value) : [];
+        const tasksData = tasksRes.status === 'fulfilled' ? extractArray<any>(tasksRes.value) : [];
+
+        if (teamsRes.status === 'rejected') {
+          console.error('Failed to fetch teams:', teamsRes.reason);
+        }
+        if (tasksRes.status === 'rejected') {
+          console.error('Failed to fetch tasks:', tasksRes.reason);
+        }
+
+        setTeams(teamsData);
+        setTasks(tasksData);
+
+        const managedTeam = teamsData.find(
+          (t: any) => String(getTeamLeaderId(t)) === String(user?.id)
+        ) as any;
+
+        // If no team found for this user, try to find any team they might be a member of
+        let fallbackTeam = managedTeam;
+        if (!managedTeam) {
+          fallbackTeam = teamsData.find((t: any) =>
+            getTeamMemberIds(t).includes(String(user?.id))
+          ) as any;
+        }
+
+        // Get memberIds from team
+        const teamToUse = managedTeam || fallbackTeam;
+        const teamDetailsRes = teamToUse ? await getTeamById(String(teamToUse.id)) : null;
+        const teamDetails = teamDetailsRes
+          ? Array.isArray(teamDetailsRes)
+            ? teamDetailsRes[0]
+            : teamDetailsRes?.data || teamDetailsRes
+          : teamToUse;
+
+        if (active) setTeam(teamDetails || null);
+        let members = getTeamMembers(teamDetails);
+        const memberIds = Array.from(
+          new Set([
+            ...members.map((member) => String(member.id)),
+            ...getTeamMemberIds(teamDetails),
+          ].filter(Boolean))
+        );
+
+        const missingIds = memberIds.filter((id) => !members.some((member) => String(member.id) === id));
+        const fetchedMembers = await Promise.allSettled(
+          missingIds.map(async (memberId) => {
+            try {
+              const userData = await getUserById(memberId);
+              return Array.isArray(userData) ? userData[0] : userData?.data || userData;
+            } catch (err) {
+              return null;
+            }
+          })
+        );
+
+        const resolvedMembers = fetchedMembers
+          .filter((result): result is PromiseFulfilledResult<any> => result.status === 'fulfilled' && !!result.value)
+          .map((result) => result.value);
+
+        const finalTeamMembers = memberIds.map((memberId) => {
+          const existing = members.find((member) => String(member.id) === memberId);
+          const fetched = resolvedMembers.find((member) => String(member.id) === memberId);
+          return {
+            id: memberId,
+            name:
+              existing?.name || fetched?.name || fetched?.fullName || `Member ${memberId.slice(0, 5)}`,
+            email:
+              existing?.email || fetched?.email || `${existing?.name || 'member'}@company.com`,
+            role: existing?.role || fetched?.role || 'member',
+            teamId: existing?.teamId || fetched?.teamId || teamDetails?.id,
+          };
+        });
+
+        setTeamMembers(finalTeamMembers);
+        const finalMemberIds = finalTeamMembers.map((member) => String(member.id));
+
+        const weekStart = weekView === 'this_week' ? getCurrentWeekDates().start : getNextWeekDates().start;
+        const weekEnd = weekView === 'this_week' ? getCurrentWeekDates().end : getNextWeekDates().end;
+
+        setWeekTasks(
+          tasksData.filter((task: any) => {
+            if (!finalMemberIds.includes(String(task.assignedMemberId))) return false;
+            const taskStart = new Date(task.startDate);
+            const taskDue = new Date(task.dueDate);
+            return (
+              (taskStart >= weekStart && taskStart <= weekEnd) ||
+              (taskDue >= weekStart && taskDue <= weekEnd) ||
+              (taskStart <= weekStart && taskDue >= weekEnd)
+            );
+          })
+        );
+      } catch (err: any) {
+        setError(err?.message || 'Unable to load team data.');
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+
+    loadTeamData();
+    return () => {
+      active = false;
+    };
+  }, [user, weekView]);
+
+
+
+  // Get week dates for the header banner
   const { start: thisWeekStart, end: thisWeekEnd } = getCurrentWeekDates();
   const { start: nextWeekStart, end: nextWeekEnd } = getNextWeekDates();
-
   const weekStart = weekView === 'this_week' ? thisWeekStart : nextWeekStart;
   const weekEnd = weekView === 'this_week' ? thisWeekEnd : nextWeekEnd;
-
-  // Filter tasks for the selected week and team
-  const weekTasks = mockTasks.filter((task) => {
-    if (!teamMemberIds.includes(task.assignedMemberId)) return false;
-    const taskStart = new Date(task.startDate);
-    const taskDue = new Date(task.dueDate);
-    return (
-      (taskStart >= weekStart && taskStart <= weekEnd) ||
-      (taskDue >= weekStart && taskDue <= weekEnd) ||
-      (taskStart <= weekStart && taskDue >= weekEnd)
-    );
-  });
 
   // Calculate workload per member
   const memberWorkloads = teamMembers.map((member) => {
     const memberTasks = weekTasks.filter((t) => t.assignedMemberId === member.id);
-    const allMemberTasks = mockTasks.filter((t) => t.assignedMemberId === member.id);
+    const allMemberTasks = tasks.filter((t) => t.assignedMemberId === member.id);
     const totalWeight = memberTasks.reduce((sum, task) => sum + calculateTaskWeight(task), 0);
     const totalEffort = memberTasks.reduce((sum, task) => sum + task.estimatedEffort, 0);
     const status = getWorkloadStatus(totalWeight);
@@ -66,6 +179,26 @@ export default function TeamPage() {
     const options: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
     return `${weekStart.toLocaleDateString('en-US', options)} - ${weekEnd.toLocaleDateString('en-US', options)}`;
   };
+
+  if (!user) return null;
+
+  if (loading) {
+    return <div className="p-8 text-center text-muted-foreground">Loading team data...</div>;
+  }
+
+  if (error) {
+    return <div className="p-8 text-center text-destructive">Error loading team data: {error}</div>;
+  }
+
+  if (!team) {
+    return (
+      <div className="p-8 text-center text-muted-foreground">
+        <h2 className="text-xl font-semibold mb-2">No Team Found</h2>
+        <p>You are not currently assigned to any team as a leader or member.</p>
+        <p>Please contact your administrator to be assigned to a team.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

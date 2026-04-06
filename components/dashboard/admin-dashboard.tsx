@@ -1,16 +1,82 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { mockUsers, mockTeams, mockTasks } from '@/lib/mock-data';
+import { getUsers, getTeams, getTasks, getDashboardAdmin } from '@/lib/api';
 import { Users, Building2, CheckSquare, TrendingUp, UserPlus, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Link } from 'react-router-dom';
 
 export function AdminDashboard() {
-  const totalUsers = mockUsers.length;
-  const totalTeams = mockTeams.length;
-  const totalTasks = mockTasks.length;
-  const activeTasks = mockTasks.filter((t) => t.status !== 'done').length;
+  const [users, setUsers] = useState<any[]>([]);
+  const [teams, setTeams] = useState<any[]>([]);
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    const normalizeArray = <T,>(payload: any): T[] => {
+      if (Array.isArray(payload)) return payload;
+      if (payload && Array.isArray(payload.data)) return payload.data;
+      return [];
+    };
+
+    async function loadData() {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const [usersSettled, teamsSettled, tasksSettled] = await Promise.allSettled([
+          getUsers(),
+          getTeams(),
+          getTasks(),
+        ]);
+
+        if (!active) return;
+
+        setUsers(
+          usersSettled.status === 'fulfilled'
+            ? normalizeArray(usersSettled.value)
+            : []
+        );
+        setTeams(
+          teamsSettled.status === 'fulfilled'
+            ? normalizeArray(teamsSettled.value)
+            : []
+        );
+        setTasks(
+          tasksSettled.status === 'fulfilled'
+            ? normalizeArray(tasksSettled.value)
+            : []
+        );
+      } catch (err: any) {
+        if (!active) return;
+        setError(err?.message || 'Unable to load admin dashboard data.');
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+
+    loadData();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (loading) {
+    return <div className="p-6 text-center text-muted-foreground">Loading admin dashboard...</div>;
+  }
+
+  if (error) {
+    return <div className="p-6 text-center text-destructive">Error: {error}</div>;
+  }
+
+  const totalUsers = users.length;
+  const totalTeams = teams.length;
+  const totalTasks = tasks.length;
+  const activeTasks = tasks.filter((t) => t.status !== 'done').length;
 
   const stats = [
     {
@@ -116,7 +182,7 @@ export function AdminDashboard() {
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {mockUsers.slice(0, 5).map((user) => (
+              {users.slice(0, 5).map((user) => (
                 <div
                   key={user.id}
                   className="flex items-center justify-between p-3 rounded-lg bg-secondary/50"
@@ -124,7 +190,7 @@ export function AdminDashboard() {
                   <div className="flex items-center gap-3">
                     <div className="h-8 w-8 rounded-full bg-primary/20 flex items-center justify-center">
                       <span className="text-sm font-medium text-primary">
-                        {user.name.charAt(0)}
+                        {user?.name ? String(user.name).charAt(0) : '?'}
                       </span>
                     </div>
                     <div>
@@ -158,13 +224,12 @@ export function AdminDashboard() {
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {mockTeams.map((team) => {
-              const leader = mockUsers.find((u) => u.id === team.leaderId);
-              const memberCount = team.memberIds.length;
-              const teamTasks = mockTasks.filter((t) =>
-                team.memberIds.includes(t.assignedMemberId)
+            {teams.map((team) => {
+              const leader = users.find((u) => u.id === team.leaderId);
+              const memberCount = Array.isArray(team.memberIds) ? team.memberIds.length : 0;
+              const teamTasks = tasks.filter((t) =>
+                Array.isArray(team.memberIds) ? team.memberIds.includes(t.assignedMemberId) : false
               );
-
               return (
                 <div
                   key={team.id}

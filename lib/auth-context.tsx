@@ -1,8 +1,28 @@
 'use client';
 
-import { createContext, useContext, useState, ReactNode } from 'react';
-import { User, UserRole } from './types';
-import { mockUsers } from './mock-data';
+import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { normalizeUserRole, User, UserRole } from './types';
+import * as api from './api';
+
+function normalizeUserPayload(userPayload: any): User {
+  const id = String(userPayload?.id ?? userPayload?._id ?? userPayload?.userId ?? '');
+  const teamId =
+    userPayload?.teamId ??
+    userPayload?.team?.id ??
+    userPayload?.team?._id ??
+    userPayload?.team?.teamId ??
+    '';
+
+  return {
+    id,
+    name: String(userPayload?.name ?? userPayload?.fullName ?? userPayload?.full_name ?? ''),
+    email: String(userPayload?.email ?? ''),
+    role: normalizeUserRole(userPayload?.role),
+    teamId: String(teamId),
+    skillLevel: userPayload?.skillLevel,
+    avatar: userPayload?.avatar,
+  };
+}
 
 interface AuthContextType {
   user: User | null;
@@ -10,80 +30,107 @@ interface AuthContextType {
   register: (name: string, email: string, password: string, role: UserRole) => Promise<boolean>;
   logout: () => void;
   isLoading: boolean;
+  isInitialized: boolean;
   updateUser: (updatedUser: User) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+const STORAGE_TOKEN = 'taskflow_token';
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isInitialized, setIsInitialized] = useState(false);
 
-  const login = async (email: string, _password: string, role?: UserRole): Promise<boolean> => {
+  useEffect(() => {
+    const token = localStorage.getItem(STORAGE_TOKEN);
+    if (token) {
+      api.setToken(token);
+      api
+        .getCurrentUser()
+        .then((currentUser) => {
+          const resolvedUser = currentUser?.data ?? currentUser;
+          setUser(normalizeUserPayload(resolvedUser));
+        })
+        .catch(() => {
+          localStorage.removeItem(STORAGE_TOKEN);
+          api.setToken(null);
+          setUser(null);
+        })
+        .finally(() => setIsInitialized(true));
+    } else {
+      setIsInitialized(true);
+    }
+  }, []);
+
+  const login = async (email: string, password: string, role?: UserRole): Promise<boolean> => {
     setIsLoading(true);
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      const loginPayload: any = { email, password };
+      if (role) {
+        loginPayload.role = role;
+      }
 
-    // Find user by email (mock authentication)
-    let foundUser = mockUsers.find((u) => u.email === email);
-    
-    // If user found and role specified, update the role
-    if (foundUser && role) {
-      foundUser = { ...foundUser, role };
-    }
-    
-    // If no user found but email provided, create a new user with the selected role
-    if (!foundUser && email && role) {
-      foundUser = {
-        id: `user-${Date.now()}`,
-        name: email.split('@')[0],
-        email,
-        role,
-        teamId: 'team-1',
-      };
-    }
-    
-    if (foundUser) {
-      setUser(foundUser);
+      let response;
+      try {
+        response = await api.login(loginPayload);
+      } catch (err: any) {
+        // fallback when role-specific backend check fails
+        const msg = err?.message || '';
+        if (role && msg.toLowerCase().includes('not registered as')) {
+          response = await api.login({ email, password });
+        } else {
+          throw err;
+        }
+      }
+
+      console.debug('[auth] login response', response);
+
+      const result: any = response;
+      const token = result?.data?.token ?? result?.token;
+      const userPayload = result?.data?.user ?? result?.user;
+
+      if (!token || !userPayload) {
+        throw new Error('Invalid login response from server. Expected token and user payload.');
+      }
+
+      localStorage.setItem(STORAGE_TOKEN, token);
+      api.setToken(token);
+      setUser(normalizeUserPayload(userPayload));
       setIsLoading(false);
       return true;
+    } catch (error: any) {
+      const message = error?.message || 'Login failed';
+      console.error('Login failed', message);
+      setIsLoading(false);
+      throw new Error(message);
     }
-    setIsLoading(false);
-    return false;
   };
 
   const register = async (
     name: string,
     email: string,
-    _password: string,
+    password: string,
     role: UserRole
   ): Promise<boolean> => {
     setIsLoading(true);
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
-    // Check if email already exists
-    const existingUser = mockUsers.find((u) => u.email === email);
-    if (existingUser) {
+    try {
+      await api.register({ fullName: name, email, password, confirmPassword: password });
+      const success = await login(email, password, role);
       setIsLoading(false);
-      return false;
+      return success;
+    } catch (error: any) {
+      const message = error?.message || 'Register failed';
+      console.error('Register failed', message);
+      setIsLoading(false);
+      throw new Error(message);
     }
-
-    // Create new user
-    const newUser: User = {
-      id: `user-${Date.now()}`,
-      name,
-      email,
-      role,
-      teamId: 'team-1', // Default team
-    };
-
-    setUser(newUser);
-    setIsLoading(false);
-    return true;
   };
 
   const logout = () => {
+    localStorage.removeItem(STORAGE_TOKEN);
+    api.setToken(null);
     setUser(null);
   };
 
@@ -92,7 +139,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, register, logout, isLoading, updateUser }}>
+    <AuthContext.Provider value={{ user, login, register, logout, isLoading, isInitialized, updateUser }}>
       {children}
     </AuthContext.Provider>
   );

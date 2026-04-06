@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/auth-context';
 import { useTheme } from '@/lib/theme-context';
@@ -21,6 +21,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { getTeamById } from '@/lib/api';
 import { FieldGroup, Field, FieldLabel } from '@/components/ui/field';
 import { Menu, Bell, LogOut, User, Settings, Moon, Sun, Upload, X, Camera } from 'lucide-react';
 
@@ -32,6 +33,7 @@ export function DashboardHeader() {
   const [profileImage, setProfileImage] = useState<string | null>(null);
   const [editName, setEditName] = useState(user?.name || '');
   const [editEmail, setEditEmail] = useState(user?.email || '');
+  const [teamName, setTeamName] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -56,6 +58,29 @@ export function DashboardHeader() {
       handleImageUpload(file);
     }
   };
+
+  useEffect(() => {
+    let active = true;
+    async function loadTeamName() {
+      if (!user?.teamId) {
+        setTeamName(null);
+        return;
+      }
+      try {
+        const team = await getTeamById(String(user.teamId));
+        if (!active) return;
+        const name = team?.data?.name || team?.name || `Team ${String(user.teamId)}`;
+        setTeamName(name);
+      } catch (err) {
+        if (!active) return;
+        setTeamName(`Team ${String(user.teamId)}`);
+      }
+    }
+    loadTeamName();
+    return () => {
+      active = false;
+    };
+  }, [user?.teamId]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -293,7 +318,7 @@ export function DashboardHeader() {
               <Field>
                 <FieldLabel>Team</FieldLabel>
                 <p className="text-sm text-foreground">
-                  {user?.teamId ? `Team ${user.teamId.replace('team-', '')}` : 'Not assigned'}
+                  {teamName || (user?.teamId ? `Team ${String(user.teamId).replace(/^team-/i, '')}` : 'Not assigned')}
                 </p>
               </Field>
             </FieldGroup>

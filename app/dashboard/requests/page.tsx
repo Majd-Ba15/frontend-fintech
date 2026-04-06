@@ -1,9 +1,10 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { mockChangeRequests, mockTasks, mockUsers } from '@/lib/mock-data';
 import { useAuth } from '@/lib/auth-context';
+import { getTasks, getMyTasks, getUserById, getChangeRequests, getMyChangeRequests, reviewChangeRequest } from '@/lib/api';
 import { ChangeRequest, ChangeRequestStatus } from '@/lib/types';
 import {
   Clock,
@@ -37,29 +38,152 @@ const typeLabels: Record<string, string> = {
 
 export default function ChangeRequestsPage() {
   const { user } = useAuth();
+  const [requests, setRequests] = useState<any[]>([]);
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [users, setUsers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Filter requests based on role
-  let requests = mockChangeRequests;
-  if (user?.role === 'member') {
-    requests = mockChangeRequests.filter((r) => r.requestedBy === user.id);
-  }
+  useEffect(() => {
+    let active = true;
+
+    async function loadData() {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const tasksPromise = user?.role === 'member' ? getMyTasks() : getTasks();
+        const requestsPromise = user?.role === 'member' ? getMyChangeRequests() : getChangeRequests();
+        const [tasksRes, currentRequestsRes] = await Promise.all([tasksPromise, requestsPromise]);
+
+        if (!active) return;
+
+        const tasksData = Array.isArray(tasksRes) ? tasksRes : tasksRes?.data || [];
+        const requestData = Array.isArray(currentRequestsRes) ? currentRequestsRes : currentRequestsRes?.data || [];
+
+        setTasks(tasksData);
+        setRequests(requestData);
+
+        const userIds = new Set<string>();
+
+        requestData.forEach((request: any) => {
+          if (request.requestedBy) userIds.add(String(request.requestedBy));
+          if (request.reviewedBy) userIds.add(String(request.reviewedBy));
+          if (request.type === 'owner_change') {
+            if (request.oldValue) userIds.add(String(request.oldValue));
+            if (request.newValue) userIds.add(String(request.newValue));
+          }
+        });
+
+        tasksData.forEach((task: any) => {
+          if (task.assignedMemberId) userIds.add(String(task.assignedMemberId));
+        });
+
+        const canFetchUser = (id: string) =>
+          user?.role === 'admin' || user?.role === 'team_leader' || String(user?.id) === id;
+
+        if (user?.role === 'member') {
+          const currentUserRecord = user
+            ? {
+                id: String(user.id),
+                name: user.name,
+                email: user.email,
+                role: user.role,
+                teamId: user.teamId,
+              }
+            : null;
+
+          setUsers(currentUserRecord ? [currentUserRecord] : []);
+          return;
+        }
+
+        const userFetchPromises = Array.from(userIds)
+          .filter((id) => canFetchUser(id))
+          .map(async (id) => {
+            try {
+              const userData = await getUserById(id);
+              return Array.isArray(userData) ? userData[0] : userData?.data || userData;
+            } catch (err) {
+              return null;
+            }
+          });
+
+        const fetchedUsers = await Promise.all(userFetchPromises);
+        if (!active) return;
+
+        setUsers(fetchedUsers.filter(Boolean) as any[]);
+      } catch (err: any) {
+        setError(err?.message || 'Unable to load requests.');
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+
+    loadData();
+    return () => {
+      active = false;
+    };
+  }, [user]);
 
   const pendingRequests = requests.filter((r) => r.status === 'pending');
   const processedRequests = requests.filter((r) => r.status !== 'pending');
 
-  const handleApprove = (requestId: string) => {
-    console.log('[v0] Approving request:', requestId);
+  if (!user) return null;
+
+  if (loading) {
+    return <div className="p-8 text-center text-muted-foreground">Loading change requests...</div>;
+  }
+
+  if (error) {
+    return <div className="p-8 text-center text-destructive">Error loading requests: {error}</div>;
+  }
+
+  const handleApprove = async (requestId: string) => {
+    try {
+      await reviewChangeRequest(requestId, 'approved');
+      setRequests((prev) => prev.map((req) => (req.id === requestId ? { ...req, status: 'approved', reviewedBy: user?.id, reviewedAt: new Date().toISOString() } : req)));
+    } catch (err: any) {
+      console.error('Error approving request:', err);
+      setError(err?.message || 'Failed to approve request.');
+    }
   };
 
-  const handleReject = (requestId: string) => {
-    console.log('[v0] Rejecting request:', requestId);
+  const handleReject = async (requestId: string) => {
+    try {
+      await reviewChangeRequest(requestId, 'rejected');
+      setRequests((prev) => prev.map((req) => (req.id === requestId ? { ...req, status: 'rejected', reviewedBy: user?.id, reviewedAt: new Date().toISOString() } : req)));
+    } catch (err: any) {
+      console.error('Error rejecting request:', err);
+      setError(err?.message || 'Failed to reject request.');
+    }
   };
 
   const renderRequestCard = (request: ChangeRequest, showActions: boolean = false) => {
-    const task = mockTasks.find((t) => t.id === request.taskId);
-    const requester = mockUsers.find((u) => u.id === request.requestedBy);
-    const reviewer = mockUsers.find((u) => u.id === request.reviewedBy);
+    const task = tasks.find((t) => t.id === request.taskId);
+    const requester = users.find((u) => u.id === request.requestedBy);
+    const reviewer = users.find((u) => u.id === request.reviewedBy);
     const StatusIcon = statusIcons[request.status];
+
+    const requesterName =
+      requester?.name ||
+      (String(request.requestedBy) === String(user?.id) ? user?.name : undefined) ||
+      `User ${request.requestedBy}`;
+    const reviewerName =
+      reviewer?.name ||
+      (String(request.reviewedBy) === String(user?.id) ? user?.name : undefined) ||
+      (request.reviewedBy ? 'Team Leader' : undefined);
+    const currentValue =
+      request.type === 'owner_change'
+        ? users.find((u) => u.id === request.oldValue)?.name || `User ${request.oldValue}`
+        : request.type === 'effort_increase'
+        ? `${request.oldValue} hours`
+        : request.oldValue;
+    const requestedValue =
+      request.type === 'owner_change'
+        ? users.find((u) => u.id === request.newValue)?.name || `User ${request.newValue}`
+        : request.type === 'effort_increase'
+        ? `${request.newValue} hours`
+        : request.newValue;
 
     return (
       <div
@@ -89,7 +213,7 @@ export default function ChangeRequestsPage() {
             <div className="flex items-center gap-4 mt-3 flex-wrap text-xs text-muted-foreground">
               <div className="flex items-center gap-1">
                 <User className="h-3 w-3" />
-                Requested by {requester?.name}
+                Requested by {requesterName}
               </div>
               <div className="flex items-center gap-1">
                 <Calendar className="h-3 w-3" />
@@ -101,30 +225,18 @@ export default function ChangeRequestsPage() {
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
                   <p className="text-muted-foreground">Current Value</p>
-                  <p className="font-medium text-foreground">
-                    {request.type === 'owner_change'
-                      ? mockUsers.find((u) => u.id === request.oldValue)?.name
-                      : request.type === 'effort_increase'
-                      ? `${request.oldValue} hours`
-                      : request.oldValue}
-                  </p>
+                  <p className="font-medium text-foreground">{currentValue}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Requested Value</p>
-                  <p className="font-medium text-primary">
-                    {request.type === 'owner_change'
-                      ? mockUsers.find((u) => u.id === request.newValue)?.name
-                      : request.type === 'effort_increase'
-                      ? `${request.newValue} hours`
-                      : request.newValue}
-                  </p>
+                  <p className="font-medium text-primary">{requestedValue}</p>
                 </div>
               </div>
             </div>
 
-            {request.status !== 'pending' && reviewer && (
+            {request.status !== 'pending' && reviewerName && (
               <p className="text-xs text-muted-foreground mt-3">
-                Reviewed by {reviewer.name} on{' '}
+                Reviewed by {reviewerName} on{' '}
                 {new Date(request.reviewedAt!).toLocaleDateString()}
               </p>
             )}

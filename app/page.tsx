@@ -23,11 +23,13 @@ export default function LoginPage() {
     e.preventDefault();
     setError('');
 
-    const success = await login(email, password, selectedRole);
-    if (success) {
-      navigate('/dashboard');
-    } else {
-      setError('Invalid email or password.');
+    try {
+      const success = await login(email, password, selectedRole);
+      if (success) {
+        navigate('/dashboard');
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Invalid email or password.');
     }
   };
 

@@ -7,16 +7,16 @@ import { DashboardSidebar } from '@/components/dashboard/sidebar';
 import { DashboardHeader } from '@/components/dashboard/header';
 
 export default function DashboardLayout() {
-  const { user } = useAuth();
+  const { user, isInitialized } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (!user) {
+    if (isInitialized && !user) {
       navigate('/');
     }
-  }, [user, navigate]);
+  }, [user, isInitialized, navigate]);
 
-  if (!user) {
+  if (!isInitialized || !user) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <div className="text-muted-foreground">Loading...</div>

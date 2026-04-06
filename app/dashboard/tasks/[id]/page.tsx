@@ -2,9 +2,10 @@
 
 import { useParams } from 'react-router-dom';
 import { useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { mockTasks, mockUsers } from '@/lib/mock-data';
+import { acknowledgeTask, getTaskById, getUserById, updateTaskStatus } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import {
   calculateTaskWeight,
@@ -21,6 +22,9 @@ import {
   FileText,
   Edit,
   Trash2,
+  Loader2,
+  PauseCircle,
+  Circle,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -29,9 +33,71 @@ export default function TaskDetailPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
 
-  const task = mockTasks.find((t) => t.id === id);
-  const assignee = mockUsers.find((u) => u.id === task?.assignedMemberId);
-  const creator = mockUsers.find((u) => u.id === task?.createdBy);
+  const [task, setTask] = useState<any | null>(null);
+  const [assignee, setAssignee] = useState<any | null>(null);
+  const [creator, setCreator] = useState<any | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!id) return;
+    let active = true;
+
+    async function loadTask() {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const taskRes = await getTaskById(id!);
+        if (!active) return;
+
+        const taskData = Array.isArray(taskRes) ? taskRes[0] : taskRes?.data || taskRes;
+        setTask(taskData);
+
+        if (taskData?.assignedMemberId && (user?.role === 'admin' || user?.role === 'team_leader' || String(user?.id) === String(taskData.assignedMemberId))) {
+          const assignedUserRes = await getUserById(taskData.assignedMemberId);
+          if (!active) return;
+          setAssignee(Array.isArray(assignedUserRes) ? assignedUserRes[0] : assignedUserRes?.data || assignedUserRes);
+        } else if (taskData?.assignedMemberId) {
+          setAssignee({
+            id: String(taskData.assignedMemberId),
+            name: String(user?.id) === String(taskData.assignedMemberId) ? user?.name : 'Assigned Member',
+          });
+        }
+
+        if (taskData?.createdBy && (user?.role === 'admin' || user?.role === 'team_leader' || String(user?.id) === String(taskData.createdBy))) {
+          const creatorUserRes = await getUserById(taskData.createdBy);
+          if (!active) return;
+          setCreator(Array.isArray(creatorUserRes) ? creatorUserRes[0] : creatorUserRes?.data || creatorUserRes);
+        } else if (taskData?.createdBy) {
+          setCreator({
+            id: String(taskData.createdBy),
+            name: String(user?.id) === String(taskData.createdBy) ? user?.name : 'Task Creator',
+          });
+        }
+      } catch (err: any) {
+        setError(err?.message || 'Unable to load task.');
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+
+    loadTask();
+    return () => {
+      active = false;
+    };
+  }, [id, user]);
+
+  if (!user) return null;
+
+  if (loading) {
+    return <div className="p-8 text-center text-muted-foreground">Loading task details...</div>;
+  }
+
+  if (error) {
+    return <div className="p-8 text-center text-destructive">Error loading task: {error}</div>;
+  }
 
   if (!task) {
     return (
@@ -54,8 +120,8 @@ export default function TaskDetailPage() {
   }
 
   const weight = calculateTaskWeight(task);
-  const complexityMultiplier = COMPLEXITY_MULTIPLIERS[task.complexity];
-  const priorityMultiplier = PRIORITY_MULTIPLIERS[task.priority];
+  const complexityMultiplier = COMPLEXITY_MULTIPLIERS[task.complexity as keyof typeof COMPLEXITY_MULTIPLIERS];
+  const priorityMultiplier = PRIORITY_MULTIPLIERS[task.priority as keyof typeof PRIORITY_MULTIPLIERS];
 
   const getStatusColor = () => {
     switch (task.status) {
@@ -83,9 +149,36 @@ export default function TaskDetailPage() {
     }
   };
 
-  const handleAcknowledge = () => {
-    console.log('[v0] Acknowledging task:', task.id);
+  const handleAcknowledge = async () => {
+    try {
+      setIsUpdating(true);
+      await acknowledgeTask(task.id);
+      setTask({ ...task, acknowledged: true, acknowledgedAt: new Date().toISOString() });
+    } catch (err: any) {
+      setError(err?.message || 'Unable to acknowledge task.');
+    } finally {
+      setIsUpdating(false);
+    }
   };
+
+  const handleStatusUpdate = async (status: string) => {
+    try {
+      setIsUpdating(true);
+      await updateTaskStatus(task.id, status);
+      setTask({ ...task, status, updatedAt: new Date().toISOString() });
+    } catch (err: any) {
+      setError(err?.message || 'Unable to update task status.');
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const statusActions = [
+    { value: 'new', label: 'New', icon: Circle },
+    { value: 'in_progress', label: 'In Progress', icon: Loader2 },
+    { value: 'blocked', label: 'Blocked', icon: PauseCircle },
+    { value: 'done', label: 'Done', icon: CheckCircle2 },
+  ];
 
   return (
     <div className="space-y-6">
@@ -140,7 +233,7 @@ export default function TaskDetailPage() {
               </div>
               <Button onClick={handleAcknowledge}>
                 <CheckCircle2 className="h-4 w-4 mr-2" />
-                Acknowledge
+                {isUpdating ? 'Saving...' : 'Acknowledge'}
               </Button>
             </div>
           </CardContent>
@@ -336,10 +429,27 @@ export default function TaskDetailPage() {
                 <CardTitle className="text-lg">Actions</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
-                <Button variant="outline" className="w-full justify-start">
-                  <Clock className="h-4 w-4 mr-2" />
-                  Update Status
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  {statusActions.map((statusAction) => {
+                    const StatusActionIcon = statusAction.icon;
+                    return (
+                      <Button
+                        key={statusAction.value}
+                        variant={task.status === statusAction.value ? 'default' : 'outline'}
+                        disabled={isUpdating || !task.acknowledged || task.status === statusAction.value}
+                        onClick={() => handleStatusUpdate(statusAction.value)}
+                      >
+                        <StatusActionIcon className="h-4 w-4 mr-2" />
+                        {statusAction.label}
+                      </Button>
+                    );
+                  })}
+                </div>
+                {!task.acknowledged && (
+                  <p className="text-xs text-amber-500">
+                    Acknowledge the task before changing its status.
+                  </p>
+                )}
                 <Link to="/dashboard/requests/new" className="block">
                   <Button variant="outline" className="w-full justify-start">
                     <FileText className="h-4 w-4 mr-2" />

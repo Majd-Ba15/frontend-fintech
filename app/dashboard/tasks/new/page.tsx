@@ -1,23 +1,137 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { FieldGroup, Field, FieldLabel } from '@/components/ui/field';
-import { mockUsers, mockTeams } from '@/lib/mock-data';
 import { useAuth } from '@/lib/auth-context';
-import { TaskPriority, TaskComplexity, COMPLEXITY_MULTIPLIERS, PRIORITY_MULTIPLIERS } from '@/lib/types';
+import { getTeams, getTasks, createTask, getUserById } from '@/lib/api';
+import { extractArray, getTeamLeaderId, getTeamMemberIds, getTeamMembers } from '@/lib/utils';
+import { TaskPriority, TaskComplexity, COMPLEXITY_MULTIPLIERS, PRIORITY_MULTIPLIERS, isSkillLevelMatch, getSkillLevelBadgeText, getSkillLevelColor, getComplexityMatch, getMatchColor } from '@/lib/types';
+import { useTeamSkills } from '@/hooks/use-team-skills';
 import { ArrowLeft, Calculator } from 'lucide-react';
 
 export default function NewTaskPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { skills } = useTeamSkills();
+  const [teams, setTeams] = useState<any[]>([]);
+  const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Get team members
-  const team = mockTeams.find((t) => t.leaderId === user?.id);
-  const teamMembers = mockUsers.filter((u) => team?.memberIds.includes(u.id));
+  useEffect(() => {
+    if (!user) return;
+    let active = true;
+    async function loadData() {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const [teamsRes, tasksRes] = await Promise.allSettled([getTeams(), getTasks()]);
+        const teamsData = teamsRes.status === 'fulfilled' ? extractArray<any>(teamsRes.value) : [];
+        const tasksData = tasksRes.status === 'fulfilled' ? extractArray<any>(tasksRes.value) : [];
+        setTeams(teamsData);
+
+        let currentTeam = teamsData.find(
+          (t: any) => String(getTeamLeaderId(t)) === String(user.id)
+        );
+
+        if (!currentTeam) {
+          currentTeam = teamsData.find((t: any) =>
+            getTeamMemberIds(t).includes(String(user.id))
+          );
+        }
+
+        if (!currentTeam) {
+          currentTeam = teamsData.find((t: any) =>
+            String(t.leader?.email || t.teamLeader?.email || '').toLowerCase() === String(user.email).toLowerCase()
+          );
+        }
+
+        if (!currentTeam && user.teamId) {
+          currentTeam = teamsData.find((t: any) => String(t.id) === String(user.teamId));
+        }
+
+        if (!currentTeam) {
+          setTeamMembers([]);
+          return;
+        }
+
+        // Build a task count map for current team members
+        const taskCounts = tasksData.reduce((map: Record<string, number>, task: any) => {
+          const assignee = String(task.assignedMemberId || task.assignedToId || task.assigned_to || '');
+          if (!assignee) return map;
+          map[assignee] = (map[assignee] || 0) + 1;
+          return map;
+        }, {} as Record<string, number>);
+
+        const rawTeamMembers = getTeamMembers(currentTeam);
+        const memberIds = Array.from(new Set([
+          ...rawTeamMembers.map((member) => String(member.id)),
+          ...getTeamMemberIds(currentTeam),
+        ].filter(Boolean)));
+
+        const missingMemberIds = memberIds.filter((memberId) =>
+          !rawTeamMembers.some((member) => String(member.id) === memberId && member.name)
+        );
+
+        const fetchedMemberPromises = missingMemberIds.map(async (memberId) => {
+          try {
+            const userData = await getUserById(memberId);
+            return userData?.data || userData;
+          } catch (err) {
+            console.warn(`Failed to fetch user data for ${memberId}:`, err);
+            return null;
+          }
+        });
+
+        const fetchedMemberResults = await Promise.all(fetchedMemberPromises);
+        const fetchedMembers = fetchedMemberResults
+          .filter(Boolean)
+          .map((memberData: any) => ({
+            id: memberData?.id || memberData?._id || '',
+            name: memberData?.name || memberData?.fullName || `Member ${String(memberData?.id).slice(0, 5)}`,
+            email: memberData?.email || `${memberData?.name || 'member'}@company.com`,
+            role: memberData?.role || 'member',
+            teamId: memberData?.teamId || currentTeam.id,
+            skillLevel: skills[memberData?.id] || memberData?.skillLevel || undefined,
+          }));
+
+        const members = memberIds.map((memberId) => {
+          const rawMember = rawTeamMembers.find((member) => String(member.id) === memberId);
+          const fetchedMember = fetchedMembers.find((member) => String(member.id) === memberId);
+          const merged = {
+            id: memberId,
+            name:
+              rawMember?.name || fetchedMember?.name || `Member ${memberId.slice(0, 5)}`,
+            email:
+              rawMember?.email || fetchedMember?.email || `member-${memberId.slice(0, 5)}@company.com`,
+            role: rawMember?.role || fetchedMember?.role || 'member',
+            teamId: rawMember?.teamId || fetchedMember?.teamId || currentTeam.id,
+            skillLevel: rawMember?.skillLevel || fetchedMember?.skillLevel || skills[memberId],
+            taskCount: taskCounts[memberId] || 0,
+          };
+          return merged;
+        });
+
+        if (active) {
+          setTeamMembers(members);
+        }
+      } catch (err: any) {
+        setError(err?.message || 'Unable to load initial task data.');
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+
+    loadData();
+    return () => {
+      active = false;
+    };
+  }, [user, skills]);
 
   const [formData, setFormData] = useState({
     title: '',
@@ -38,12 +152,40 @@ export default function NewTaskPage() {
     );
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log('[v0] Creating task:', formData);
-    // In a real app, this would call an API
-    navigate('/dashboard/tasks');
+    setLoading(true);
+
+    try {
+      const assignedId = String(formData.assignedMemberId);
+
+      const taskPayload = {
+        ...formData,
+        createdBy: user?.id,
+        assignedToId: assignedId,
+        assignedMemberId: assignedId,
+        startDate: formData.startDate,
+        dueDate: formData.dueDate,
+      };
+
+      await createTask(taskPayload);
+      navigate('/dashboard/tasks');
+    } catch (err: any) {
+      setError(err?.message || 'Unable to create task.');
+    } finally {
+      setLoading(false);
+    }
   };
+
+  if (!user) return null;
+
+  if (loading) {
+    return <div className="p-8 text-center text-muted-foreground">Creating task...</div>;
+  }
+
+  if (error) {
+    return <div className="p-8 text-center text-destructive">{error}</div>;
+  }
 
   return (
     <div className="space-y-6">
@@ -105,11 +247,15 @@ export default function NewTaskPage() {
                       required
                     >
                       <option value="">Select team member</option>
-                      {teamMembers.map((member) => (
-                        <option key={member.id} value={member.id}>
-                          {member.name}
-                        </option>
-                      ))}
+                      {teamMembers.map((member) => {
+                        const matchStatus = getComplexityMatch(member.skillLevel, formData.complexity);
+                        const isMatch = matchStatus === 'perfect';
+                        return (
+                          <option key={member.id} value={member.id}>
+                            {member.name} ({member.email}) — {member.taskCount || 0} tasks {isMatch ? '✓ Perfect Match' : ''}
+                          </option>
+                        );
+                      })}
                     </select>
                   </Field>
 
@@ -146,6 +292,46 @@ export default function NewTaskPage() {
                         <option value="complex">Complex (x2.0)</option>
                       </select>
                     </Field>
+                  </div>
+
+                  {/* Team Member Recommendations */}
+                  <div>
+                    <FieldLabel>Recommended Team Members for {formData.complexity} complexity</FieldLabel>
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-2">
+                      {teamMembers.map((member) => {
+                        const matchStatus = getComplexityMatch(member.skillLevel, formData.complexity);
+                        const isSelected = formData.assignedMemberId === member.id;
+                        return (
+                          <button
+                            key={member.id}
+                            type="button"
+                            onClick={() => setFormData({ ...formData, assignedMemberId: member.id })}
+                            className={`p-3 rounded-lg border-2 transition-all ${
+                              isSelected 
+                                ? 'border-primary bg-primary/10' 
+                                : `border-border ${getMatchColor(matchStatus)}`
+                            }`}
+                          >
+                            <div className="text-left">
+                              <p className="font-medium text-foreground text-sm">{member.name}</p>
+                              <p className="text-xs text-muted-foreground">{member.email}</p>
+                              <span className={`text-xs px-1.5 py-0.5 rounded inline-block mt-2 ${getSkillLevelColor(member.skillLevel)}`}>
+                                {getSkillLevelBadgeText(member.skillLevel)}
+                              </span>
+                              <p className="text-xs text-muted-foreground mt-2">
+                                {member.taskCount || 0} assigned task{member.taskCount === 1 ? '' : 's'}
+                              </p>
+                              <p className="text-xs text-muted-foreground mt-1 capitalize">
+                                {matchStatus === 'perfect' && '✓ Perfect Match'}
+                                {matchStatus === 'capable' && '→ Capable'}
+                                {matchStatus === 'overqualified' && '↑ Overqualified'}
+                                {matchStatus === 'under-skilled' && '⚠ Under-skilled'}
+                              </p>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
 
                   <Field>

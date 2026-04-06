@@ -1,13 +1,14 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { FieldGroup, Field, FieldLabel } from '@/components/ui/field';
-import { mockTasks, mockUsers } from '@/lib/mock-data';
 import { useAuth } from '@/lib/auth-context';
+import { getMyTasks, getTeams, getTeamById, getUserById, createChangeRequest } from '@/lib/api';
+import { getTeamLeaderId, getTeamMemberIds, getTeamMembers } from '@/lib/utils';
 import { ChangeRequestType } from '@/lib/types';
 import { ArrowLeft, FileText, Calendar, User, TrendingUp } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -15,14 +16,154 @@ import { Link } from 'react-router-dom';
 export default function NewRequestPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [team, setTeam] = useState<any | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState('');
   const [requestType, setRequestType] = useState<ChangeRequestType>('owner_change');
+
+  useEffect(() => {
+    let active = true;
+    async function loadData() {
+      setLoading(true);
+      setError(null);
+      try {
+        const [tasksRes, teamsRes] = await Promise.allSettled([getMyTasks(), getTeams()]);
+
+        if (!active) return;
+
+        const tasksData = tasksRes.status === 'fulfilled' ? (Array.isArray(tasksRes.value) ? tasksRes.value : tasksRes.value?.data || []) : [];
+        const teamsData = teamsRes.status === 'fulfilled' ? (Array.isArray(teamsRes.value) ? teamsRes.value : teamsRes.value?.data || []) : [];
+
+        setTasks(tasksData);
+
+        let currentTeam = teamsData.find((t: any) => String(getTeamLeaderId(t)) === String(user?.id));
+
+        if (!currentTeam) {
+          currentTeam = teamsData.find((t: any) => getTeamMemberIds(t).includes(String(user?.id)));
+        }
+
+        if (!currentTeam && user?.email) {
+          currentTeam = teamsData.find(
+            (t: any) =>
+              String(t.leader?.email || t.teamLeader?.email || '').toLowerCase() ===
+              String(user.email).toLowerCase()
+          );
+        }
+
+        if (!currentTeam && user?.teamId) {
+          currentTeam = teamsData.find((t: any) => String(t.id) === String(user.teamId));
+        }
+
+        if (!currentTeam) {
+          setTeam(null);
+          setTeamMembers([]);
+          return;
+        }
+
+        let teamDetails: any = currentTeam;
+
+        if (user?.role === 'admin' || user?.role === 'team_leader') {
+          try {
+            const teamDetailsRes = await getTeamById(String(currentTeam.id));
+            teamDetails = Array.isArray(teamDetailsRes)
+              ? teamDetailsRes[0]
+              : teamDetailsRes?.data || teamDetailsRes || currentTeam;
+          } catch (err) {
+            // Fallback when the backend denies direct team detail access for this user
+            teamDetails = currentTeam;
+          }
+        }
+
+        setTeam(teamDetails);
+
+        let members = getTeamMembers(teamDetails);
+        const memberIds = Array.from(
+          new Set([
+            ...members.map((member) => String(member.id)),
+            ...getTeamMemberIds(teamDetails),
+          ].filter(Boolean))
+        );
+
+        const missingIds = memberIds.filter((id) => !members.some((member) => String(member.id) === id));
+        let fetchedMembers: any[] = [];
+
+        const canFetchUsers = user?.role === 'admin' || user?.role === 'team_leader';
+        if (canFetchUsers && missingIds.length > 0) {
+          const missingMembers = await Promise.allSettled(
+            missingIds.map(async (memberId) => {
+              try {
+                const userData = await getUserById(memberId);
+                return Array.isArray(userData) ? userData[0] : userData?.data || userData;
+              } catch (err) {
+                return null;
+              }
+            })
+          );
+
+          fetchedMembers = missingMembers
+            .filter((result): result is PromiseFulfilledResult<any> => result.status === 'fulfilled' && !!result.value)
+            .map((result) => result.value);
+        }
+
+        const finalMembers = memberIds.map((memberId) => {
+          const existing = members.find((member) => String(member.id) === memberId);
+          const fetched = fetchedMembers.find((member) => String(member.id) === memberId);
+          return {
+            id: memberId,
+            name: existing?.name || fetched?.name || fetched?.fullName || `Member ${memberId.slice(0, 5)}`,
+            email: existing?.email || fetched?.email || `${existing?.name || 'member'}@company.com`,
+            role: existing?.role || fetched?.role || 'member',
+            teamId: existing?.teamId || fetched?.teamId || String(teamDetails.id),
+          };
+        });
+
+        if (active) {
+          setTeamMembers(finalMembers);
+        }
+      } catch (err: any) {
+        setError(err?.message || 'Unable to load request form data.');
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+
+    loadData();
+    return () => {
+      active = false;
+    };
+  }, [user]);
+
   const [newValue, setNewValue] = useState('');
   const [reason, setReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const selectedTaskData = tasks.find((t) => t.id === selectedTask);
+  const selectedAssignee = teamMembers.find((u) => String(u.id) === String(selectedTaskData?.assignedMemberId));
+  const selectedTaskTeamLeader =
+    teamMembers.find(
+      (u) =>
+        u.role === 'team_leader' &&
+        String(u.teamId) === String(selectedAssignee?.teamId)
+    ) ||
+    (team?.leaderId
+      ? {
+          id: String(team.leaderId),
+          name:
+            String(team.leader?.name || team.leader?.fullName || team.leader?.email || 'Team Leader'),
+        }
+      : undefined);
+
   // Get tasks assigned to current user
-  const myTasks = mockTasks.filter((t) => t.assignedMemberId === user?.id);
+  const myTasks = tasks.filter((t) => String(t.assignedMemberId) === String(user?.id));
+  const ownerChangeCandidates = teamMembers.filter(
+    (candidate) =>
+      candidate.role === 'member' &&
+      String(candidate.id) !== String(user?.id) &&
+      (!selectedAssignee?.teamId || String(candidate.teamId) === String(selectedAssignee.teamId))
+  );
 
   const requestTypes: { value: ChangeRequestType; label: string; description: string; icon: typeof User }[] = [
     {
@@ -48,24 +189,49 @@ export default function NewRequestPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
+    setError(null);
 
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      if (!user) throw new Error('User not authenticated');
+      if (!selectedTaskData) throw new Error('Please select a task first.');
+      if (!newValue.trim()) throw new Error('Please enter the requested value.');
+      if (requestType === 'owner_change' && ownerChangeCandidates.length === 0) {
+        throw new Error('No other team members are available for owner change.');
+      }
+      if (requestType === 'owner_change' && String(newValue) === String(selectedTaskData.assignedMemberId)) {
+        throw new Error('Please choose a different owner.');
+      }
+      if (requestType === 'effort_increase' && (!Number.isFinite(Number(newValue)) || Number(newValue) <= 0)) {
+        throw new Error('Please enter a valid effort estimate.');
+      }
 
-    // In a real app, this would create the request in the database
-    console.log('New Request:', {
-      taskId: selectedTask,
-      type: requestType,
-      newValue,
-      reason,
-      requestedBy: user?.id,
-    });
+      const normalizedNewValue =
+        requestType === 'effort_increase' ? String(Number(newValue)) : newValue.trim();
 
-    setIsSubmitting(false);
-    navigate('/dashboard/requests');
+      await createChangeRequest({
+        taskId: selectedTask,
+        requestType,
+        requestedValue: normalizedNewValue,
+        reason,
+      });
+      navigate('/dashboard/requests');
+    } catch (err: any) {
+      setError(err?.message || 'Unable to submit request.');
+      console.error(err);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const selectedTaskData = mockTasks.find((t) => t.id === selectedTask);
+  if (!user) return null;
+
+  if (loading) {
+    return <div className="p-8 text-center text-muted-foreground">Loading request form...</div>;
+  }
+
+  if (error) {
+    return <div className="p-8 text-center text-destructive">{error}</div>;
+  }
 
   return (
     <div className="space-y-6">
@@ -172,22 +338,35 @@ export default function NewRequestPage() {
                       : 'New Effort (hours)'}
                   </FieldLabel>
                   {requestType === 'owner_change' ? (
-                    <select
-                      id="newValue"
-                      value={newValue}
-                      onChange={(e) => setNewValue(e.target.value)}
-                      required
-                      className="w-full h-10 px-3 rounded-md border border-border bg-secondary text-foreground"
-                    >
-                      <option value="">Select new owner...</option>
-                      {mockUsers
-                        .filter((u) => u.role === 'member' && u.id !== user?.id)
-                        .map((u) => (
-                          <option key={u.id} value={u.id}>
-                            {u.name}
-                          </option>
-                        ))}
-                    </select>
+                    <>
+                      {selectedTaskTeamLeader && (
+                        <div className="mb-3 text-sm text-muted-foreground">
+                          Assigned Team Leader: <span className="font-medium text-foreground">{selectedTaskTeamLeader.name}</span>
+                        </div>
+                      )}
+                      <select
+                        id="newValue"
+                        value={newValue}
+                        onChange={(e) => setNewValue(e.target.value)}
+                        required
+                        disabled={ownerChangeCandidates.length === 0}
+                        className="w-full h-10 px-3 rounded-md border border-border bg-secondary text-foreground"
+                      >
+                        <option value="">
+                          {ownerChangeCandidates.length === 0 ? 'No available team members' : 'Select new owner...'}
+                        </option>
+                        {ownerChangeCandidates.map((u) => (
+                            <option key={u.id} value={u.id}>
+                              {u.name}
+                            </option>
+                          ))}
+                      </select>
+                      {ownerChangeCandidates.length === 0 && (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          Owner change is unavailable until another team member is visible in your team.
+                        </p>
+                      )}
+                    </>
                   ) : requestType === 'due_date_change' ? (
                     <Input
                       id="newValue"
@@ -260,7 +439,7 @@ export default function NewRequestPage() {
                     <div>
                       <p className="text-sm text-muted-foreground">Current Owner</p>
                       <p className="font-medium text-foreground">
-                        {mockUsers.find((u) => u.id === selectedTaskData.assignedMemberId)?.name}
+                        {teamMembers.find((u) => String(u.id) === String(selectedTaskData.assignedMemberId))?.name || selectedTaskData.assignedMemberId}
                       </p>
                     </div>
                     <div>

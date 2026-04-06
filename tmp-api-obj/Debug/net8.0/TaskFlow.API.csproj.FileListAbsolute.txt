@@ -1,0 +1,8 @@
+c:\Users\user\Downloads\taslflow\tmp-api-obj\Debug\net8.0\TaskFlow.API.csproj.AssemblyReference.cache
+c:\Users\user\Downloads\taslflow\tmp-api-obj\Debug\net8.0\rpswa.dswa.cache.json
+c:\Users\user\Downloads\taslflow\tmp-api-obj\Debug\net8.0\TaskFlow.API.GeneratedMSBuildEditorConfig.editorconfig
+c:\Users\user\Downloads\taslflow\tmp-api-obj\Debug\net8.0\TaskFlow.API.AssemblyInfoInputs.cache
+c:\Users\user\Downloads\taslflow\tmp-api-obj\Debug\net8.0\TaskFlow.API.AssemblyInfo.cs
+c:\Users\user\Downloads\taslflow\tmp-api-obj\Debug\net8.0\TaskFlow.API.csproj.CoreCompileInputs.cache
+c:\Users\user\Downloads\taslflow\tmp-api-obj\Debug\net8.0\TaskFlow.API.MvcApplicationPartsAssemblyInfo.cs
+c:\Users\user\Downloads\taslflow\tmp-api-obj\Debug\net8.0\TaskFlow.API.MvcApplicationPartsAssemblyInfo.cache

@@ -1,11 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { mockTasks, mockUsers, mockTeams } from '@/lib/mock-data';
 import { useAuth } from '@/lib/auth-context';
+import { getTeams, getTasks } from '@/lib/api';
+import { extractArray, getTeamLeaderId, getTeamMemberIds, getTeamMembers } from '@/lib/utils';
 import { calculateTaskWeight, Task, TaskStatus, TaskPriority } from '@/lib/types';
 import {
   Plus,
@@ -47,21 +48,108 @@ export default function TasksPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<TaskStatus | 'all'>('all');
   const [priorityFilter, setPriorityFilter] = useState<TaskPriority | 'all'>('all');
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [teams, setTeams] = useState<any[]>([]);
+  const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Get team if user is team leader
-  const team = mockTeams.find((t) => t.leaderId === user?.id);
-  const teamMemberIds = team?.memberIds || [];
+  useEffect(() => {
+    if (!user) return;
+    let active = true;
+    async function loadData() {
+      setLoading(true);
+      setError(null);
+      try {
+        const [tasksRes, teamsRes] = await Promise.allSettled([
+          getTasks(),
+          getTeams(),
+        ]);
+
+        if (!active) return;
+
+        const tasksData = tasksRes.status === 'fulfilled' ? extractArray<any>(tasksRes.value) : [];
+        const teamsData = teamsRes.status === 'fulfilled' ? extractArray<any>(teamsRes.value) : [];
+
+        setTasks(tasksData);
+        setTeams(teamsData);
+
+        let team = teamsData.find((t: any) => String(getTeamLeaderId(t)) === String(user?.id));
+        if (!team) {
+          team = teamsData.find((t: any) =>
+            getTeamMemberIds(t).includes(String(user?.id))
+          );
+        }
+        if (!team && user.email) {
+          team = teamsData.find((t: any) =>
+            String(t.leader?.email || t.teamLeader?.email || '').toLowerCase() === String(user.email).toLowerCase()
+          );
+        }
+        if (!team && user.teamId) {
+          team = teamsData.find((t: any) => String(t.id) === String(user.teamId));
+        }
+
+        const members = getTeamMembers(team);
+        const memberIds = members.map((member) => String(member.id));
+
+        const populatedMembers = members.map((member) => ({
+          ...member,
+          name: member.name || `Member ${String(member.id).slice(0, 5)}`,
+          email: member.email || `member-${String(member.id).slice(0, 5)}@company.com`,
+          role: member.role || 'member',
+          teamId: member.teamId || team?.id,
+        }));
+
+        setTeamMembers(populatedMembers);
+      } catch (err: any) {
+        setError(err?.message || 'Unable to load tasks.');
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+
+    loadData();
+    return () => {
+      active = false;
+    };
+  }, [user]);
+
+  let team = teams.find((t) => String(getTeamLeaderId(t)) === String(user?.id));
+  if (!team) {
+    team = teams.find((t) => getTeamMemberIds(t).includes(String(user?.id)));
+  }
+  if (!team && user?.email) {
+    team = teams.find(
+      (t) => String(t.leader?.email || t.teamLeader?.email || '').toLowerCase() === String(user.email).toLowerCase()
+    );
+  }
+  if (!team && user?.teamId) {
+    team = teams.find((t) => String(t.id) === String(user.teamId));
+  }
+  const teamMemberIds = teamMembers.map((member) => String(member.id));
 
   // Filter tasks based on role
-  let tasks = mockTasks;
+  let displayedTasks = tasks;
   if (user?.role === 'team_leader') {
-    tasks = mockTasks.filter((t) => teamMemberIds.includes(t.assignedMemberId));
+    displayedTasks = tasks.filter(
+      (t) => teamMemberIds.includes(String(t.assignedMemberId || t.assignedToId || t.assigned_to))
+    );
   } else if (user?.role === 'member') {
-    tasks = mockTasks.filter((t) => t.assignedMemberId === user.id);
+    displayedTasks = tasks.filter(
+      (t) => String(t.assignedMemberId || t.assignedToId || t.assigned_to) === String(user.id)
+    );
   }
 
   // Apply filters
-  let filteredTasks = tasks;
+  let filteredTasks = displayedTasks;
+
+  if (loading) {
+    return <div className="p-8 text-center text-muted-foreground">Loading tasks...</div>;
+  }
+
+  if (error) {
+    return <div className="p-8 text-center text-destructive">Error loading tasks: {error}</div>;
+  }
   if (searchQuery) {
     filteredTasks = filteredTasks.filter(
       (t) =>
@@ -184,13 +272,12 @@ export default function TasksPage() {
           <div className="space-y-3">
             {filteredTasks.map((task) => {
               const StatusIcon = statusIcons[task.status];
-              const assignee = mockUsers.find((u) => u.id === task.assignedMemberId);
               const weight = calculateTaskWeight(task);
-
+              const assignee = teamMembers.find((u) => String(u.id) === String(task.assignedMemberId));
               return (
                 <Link
                   key={task.id}
-                  href={`/dashboard/tasks/${task.id}`}
+                  to={`/dashboard/tasks/${task.id}`}
                   className="block p-4 rounded-lg border border-border bg-secondary/30 hover:bg-secondary/50 transition-colors"
                 >
                   <div className="flex items-start justify-between gap-4">
