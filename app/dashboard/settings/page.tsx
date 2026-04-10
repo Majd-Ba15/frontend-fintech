@@ -1,62 +1,201 @@
 'use client';
 
-import { useState } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { FieldGroup, Field, FieldLabel } from '@/components/ui/field';
-import { COMPLEXITY_MULTIPLIERS, PRIORITY_MULTIPLIERS } from '@/lib/types';
-import { Settings, Save, RefreshCw } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { RefreshCw, Save, Settings } from 'lucide-react';
 
-export default function SettingsPage() {
-  const [complexityMultipliers, setComplexityMultipliers] = useState({
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
+import { getSettings, resetSettings, updateSettings } from '@/lib/api';
+import { COMPLEXITY_MULTIPLIERS, PRIORITY_MULTIPLIERS } from '@/lib/types';
+
+type SettingsForm = {
+  complexityMultipliers: {
+    simple: number;
+    medium: number;
+    complex: number;
+  };
+  priorityMultipliers: {
+    low: number;
+    medium: number;
+    high: number;
+    critical: number;
+  };
+  workloadThresholds: {
+    available: number;
+    moderate: number;
+  };
+};
+
+const DEFAULT_SETTINGS: SettingsForm = {
+  complexityMultipliers: {
     simple: COMPLEXITY_MULTIPLIERS.simple,
     medium: COMPLEXITY_MULTIPLIERS.medium,
     complex: COMPLEXITY_MULTIPLIERS.complex,
-  });
-
-  const [priorityMultipliers, setPriorityMultipliers] = useState({
+  },
+  priorityMultipliers: {
     low: PRIORITY_MULTIPLIERS.low,
     medium: PRIORITY_MULTIPLIERS.medium,
     high: PRIORITY_MULTIPLIERS.high,
     critical: PRIORITY_MULTIPLIERS.critical,
-  });
-
-  const [workloadThresholds, setWorkloadThresholds] = useState({
+  },
+  workloadThresholds: {
     available: 15,
     moderate: 25,
-  });
+  },
+};
 
-  const handleSave = () => {
-    console.log('[v0] Saving settings:', {
-      complexityMultipliers,
-      priorityMultipliers,
-      workloadThresholds,
-    });
+function toNumber(value: unknown, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeSettings(payload: any): SettingsForm {
+  const data = payload?.data ?? payload ?? {};
+
+  return {
+    complexityMultipliers: {
+      simple: toNumber(
+        data?.complexityMultipliers?.simple ?? data?.complexitySimpleMultiplier,
+        DEFAULT_SETTINGS.complexityMultipliers.simple
+      ),
+      medium: toNumber(
+        data?.complexityMultipliers?.medium ?? data?.complexityMediumMultiplier,
+        DEFAULT_SETTINGS.complexityMultipliers.medium
+      ),
+      complex: toNumber(
+        data?.complexityMultipliers?.complex ?? data?.complexityComplexMultiplier,
+        DEFAULT_SETTINGS.complexityMultipliers.complex
+      ),
+    },
+    priorityMultipliers: {
+      low: toNumber(
+        data?.priorityMultipliers?.low ?? data?.priorityLowMultiplier,
+        DEFAULT_SETTINGS.priorityMultipliers.low
+      ),
+      medium: toNumber(
+        data?.priorityMultipliers?.medium ?? data?.priorityMediumMultiplier,
+        DEFAULT_SETTINGS.priorityMultipliers.medium
+      ),
+      high: toNumber(
+        data?.priorityMultipliers?.high ?? data?.priorityHighMultiplier,
+        DEFAULT_SETTINGS.priorityMultipliers.high
+      ),
+      critical: toNumber(
+        data?.priorityMultipliers?.critical ?? data?.priorityCriticalMultiplier,
+        DEFAULT_SETTINGS.priorityMultipliers.critical
+      ),
+    },
+    workloadThresholds: {
+      available: toNumber(
+        data?.workloadThresholds?.available ?? data?.availableThreshold,
+        DEFAULT_SETTINGS.workloadThresholds.available
+      ),
+      moderate: toNumber(
+        data?.workloadThresholds?.moderate ?? data?.moderateThreshold,
+        DEFAULT_SETTINGS.workloadThresholds.moderate
+      ),
+    },
+  };
+}
+
+function toApiPayload(settings: SettingsForm) {
+  return {
+    complexityMultipliers: settings.complexityMultipliers,
+    priorityMultipliers: settings.priorityMultipliers,
+    workloadThresholds: settings.workloadThresholds,
+    complexitySimpleMultiplier: settings.complexityMultipliers.simple,
+    complexityMediumMultiplier: settings.complexityMultipliers.medium,
+    complexityComplexMultiplier: settings.complexityMultipliers.complex,
+    priorityLowMultiplier: settings.priorityMultipliers.low,
+    priorityMediumMultiplier: settings.priorityMultipliers.medium,
+    priorityHighMultiplier: settings.priorityMultipliers.high,
+    priorityCriticalMultiplier: settings.priorityMultipliers.critical,
+    availableThreshold: settings.workloadThresholds.available,
+    moderateThreshold: settings.workloadThresholds.moderate,
+  };
+}
+
+export default function SettingsPage() {
+  const [settings, setSettings] = useState<SettingsForm>(DEFAULT_SETTINGS);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadSettings() {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const response = await getSettings();
+        if (!active) return;
+        setSettings(normalizeSettings(response));
+      } catch (err: any) {
+        if (!active) return;
+        setSettings(DEFAULT_SETTINGS);
+        setError(err?.message || 'Unable to load settings.');
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    }
+
+    loadSettings();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const response = await updateSettings(toApiPayload(settings));
+      setSettings(normalizeSettings(response || settings));
+      setSuccess('Settings saved successfully.');
+    } catch (err: any) {
+      setError(err?.message || 'Failed to save settings.');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleReset = () => {
-    setComplexityMultipliers({
-      simple: 1.0,
-      medium: 1.5,
-      complex: 2.0,
-    });
-    setPriorityMultipliers({
-      low: 1.0,
-      medium: 1.2,
-      high: 1.5,
-      critical: 2.0,
-    });
-    setWorkloadThresholds({
-      available: 15,
-      moderate: 25,
-    });
+  const handleReset = async () => {
+    setResetting(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const response = await resetSettings();
+      if (response) {
+        setSettings(normalizeSettings(response));
+      } else {
+        setSettings(DEFAULT_SETTINGS);
+      }
+      setSuccess('Settings reset successfully.');
+    } catch (err: any) {
+      setError(err?.message || 'Failed to reset settings.');
+    } finally {
+      setResetting(false);
+    }
   };
+
+  if (loading) {
+    return <div className="p-8 text-center text-muted-foreground">Loading settings...</div>;
+  }
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground">System Settings</h1>
           <p className="text-muted-foreground">
@@ -64,19 +203,34 @@ export default function SettingsPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={handleReset}>
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Reset to Defaults
+          <Button variant="outline" onClick={handleReset} disabled={resetting || saving}>
+            <RefreshCw className="mr-2 h-4 w-4" />
+            {resetting ? 'Resetting...' : 'Reset to Defaults'}
           </Button>
-          <Button onClick={handleSave}>
-            <Save className="h-4 w-4 mr-2" />
-            Save Changes
+          <Button onClick={handleSave} disabled={saving || resetting}>
+            <Save className="mr-2 h-4 w-4" />
+            {saving ? 'Saving...' : 'Save Changes'}
           </Button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Complexity Multipliers */}
+      {error && (
+        <Card className="border-destructive/30 bg-destructive/10">
+          <CardContent className="pt-6">
+            <p className="text-sm text-destructive">{error}</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {success && (
+        <Card className="border-emerald-500/30 bg-emerald-500/10">
+          <CardContent className="pt-6">
+            <p className="text-sm text-emerald-400">{success}</p>
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card className="bg-card border-border">
           <CardHeader>
             <div className="flex items-center gap-2">
@@ -97,12 +251,15 @@ export default function SettingsPage() {
                   step="0.1"
                   min="0.1"
                   max="5"
-                  value={complexityMultipliers.simple}
+                  value={settings.complexityMultipliers.simple}
                   onChange={(e) =>
-                    setComplexityMultipliers({
-                      ...complexityMultipliers,
-                      simple: parseFloat(e.target.value) || 1,
-                    })
+                    setSettings((prev) => ({
+                      ...prev,
+                      complexityMultipliers: {
+                        ...prev.complexityMultipliers,
+                        simple: parseFloat(e.target.value) || 1,
+                      },
+                    }))
                   }
                   className="bg-secondary border-border"
                 />
@@ -115,12 +272,15 @@ export default function SettingsPage() {
                   step="0.1"
                   min="0.1"
                   max="5"
-                  value={complexityMultipliers.medium}
+                  value={settings.complexityMultipliers.medium}
                   onChange={(e) =>
-                    setComplexityMultipliers({
-                      ...complexityMultipliers,
-                      medium: parseFloat(e.target.value) || 1,
-                    })
+                    setSettings((prev) => ({
+                      ...prev,
+                      complexityMultipliers: {
+                        ...prev.complexityMultipliers,
+                        medium: parseFloat(e.target.value) || 1,
+                      },
+                    }))
                   }
                   className="bg-secondary border-border"
                 />
@@ -133,12 +293,15 @@ export default function SettingsPage() {
                   step="0.1"
                   min="0.1"
                   max="5"
-                  value={complexityMultipliers.complex}
+                  value={settings.complexityMultipliers.complex}
                   onChange={(e) =>
-                    setComplexityMultipliers({
-                      ...complexityMultipliers,
-                      complex: parseFloat(e.target.value) || 1,
-                    })
+                    setSettings((prev) => ({
+                      ...prev,
+                      complexityMultipliers: {
+                        ...prev.complexityMultipliers,
+                        complex: parseFloat(e.target.value) || 1,
+                      },
+                    }))
                   }
                   className="bg-secondary border-border"
                 />
@@ -147,7 +310,6 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        {/* Priority Multipliers */}
         <Card className="bg-card border-border">
           <CardHeader>
             <div className="flex items-center gap-2">
@@ -168,12 +330,15 @@ export default function SettingsPage() {
                   step="0.1"
                   min="0.1"
                   max="5"
-                  value={priorityMultipliers.low}
+                  value={settings.priorityMultipliers.low}
                   onChange={(e) =>
-                    setPriorityMultipliers({
-                      ...priorityMultipliers,
-                      low: parseFloat(e.target.value) || 1,
-                    })
+                    setSettings((prev) => ({
+                      ...prev,
+                      priorityMultipliers: {
+                        ...prev.priorityMultipliers,
+                        low: parseFloat(e.target.value) || 1,
+                      },
+                    }))
                   }
                   className="bg-secondary border-border"
                 />
@@ -186,12 +351,15 @@ export default function SettingsPage() {
                   step="0.1"
                   min="0.1"
                   max="5"
-                  value={priorityMultipliers.medium}
+                  value={settings.priorityMultipliers.medium}
                   onChange={(e) =>
-                    setPriorityMultipliers({
-                      ...priorityMultipliers,
-                      medium: parseFloat(e.target.value) || 1,
-                    })
+                    setSettings((prev) => ({
+                      ...prev,
+                      priorityMultipliers: {
+                        ...prev.priorityMultipliers,
+                        medium: parseFloat(e.target.value) || 1,
+                      },
+                    }))
                   }
                   className="bg-secondary border-border"
                 />
@@ -204,12 +372,15 @@ export default function SettingsPage() {
                   step="0.1"
                   min="0.1"
                   max="5"
-                  value={priorityMultipliers.high}
+                  value={settings.priorityMultipliers.high}
                   onChange={(e) =>
-                    setPriorityMultipliers({
-                      ...priorityMultipliers,
-                      high: parseFloat(e.target.value) || 1,
-                    })
+                    setSettings((prev) => ({
+                      ...prev,
+                      priorityMultipliers: {
+                        ...prev.priorityMultipliers,
+                        high: parseFloat(e.target.value) || 1,
+                      },
+                    }))
                   }
                   className="bg-secondary border-border"
                 />
@@ -222,12 +393,15 @@ export default function SettingsPage() {
                   step="0.1"
                   min="0.1"
                   max="5"
-                  value={priorityMultipliers.critical}
+                  value={settings.priorityMultipliers.critical}
                   onChange={(e) =>
-                    setPriorityMultipliers({
-                      ...priorityMultipliers,
-                      critical: parseFloat(e.target.value) || 1,
-                    })
+                    setSettings((prev) => ({
+                      ...prev,
+                      priorityMultipliers: {
+                        ...prev.priorityMultipliers,
+                        critical: parseFloat(e.target.value) || 1,
+                      },
+                    }))
                   }
                   className="bg-secondary border-border"
                 />
@@ -236,7 +410,6 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        {/* Workload Thresholds */}
         <Card className="bg-card border-border lg:col-span-2">
           <CardHeader>
             <div className="flex items-center gap-2">
@@ -248,14 +421,14 @@ export default function SettingsPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="p-4 rounded-lg bg-emerald-500/10 border border-emerald-500/30">
-                <div className="flex items-center gap-2 mb-3">
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+              <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4">
+                <div className="mb-3 flex items-center gap-2">
                   <div className="h-3 w-3 rounded-full bg-emerald-500" />
                   <span className="font-medium text-emerald-400">Available</span>
                 </div>
-                <p className="text-sm text-muted-foreground mb-2">
-                  Weight range: 0 - {workloadThresholds.available}
+                <p className="mb-2 text-sm text-muted-foreground">
+                  Weight range: 0 - {settings.workloadThresholds.available}
                 </p>
                 <Field>
                   <FieldLabel htmlFor="threshold-available">Upper Limit</FieldLabel>
@@ -264,25 +437,28 @@ export default function SettingsPage() {
                     type="number"
                     min="1"
                     max="100"
-                    value={workloadThresholds.available}
+                    value={settings.workloadThresholds.available}
                     onChange={(e) =>
-                      setWorkloadThresholds({
-                        ...workloadThresholds,
-                        available: parseInt(e.target.value) || 15,
-                      })
+                      setSettings((prev) => ({
+                        ...prev,
+                        workloadThresholds: {
+                          ...prev.workloadThresholds,
+                          available: parseInt(e.target.value) || 15,
+                        },
+                      }))
                     }
                     className="bg-secondary border-border"
                   />
                 </Field>
               </div>
 
-              <div className="p-4 rounded-lg bg-amber-500/10 border border-amber-500/30">
-                <div className="flex items-center gap-2 mb-3">
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+                <div className="mb-3 flex items-center gap-2">
                   <div className="h-3 w-3 rounded-full bg-amber-500" />
                   <span className="font-medium text-amber-400">Moderate</span>
                 </div>
-                <p className="text-sm text-muted-foreground mb-2">
-                  Weight range: {workloadThresholds.available + 1} - {workloadThresholds.moderate}
+                <p className="mb-2 text-sm text-muted-foreground">
+                  Weight range: {settings.workloadThresholds.available + 1} - {settings.workloadThresholds.moderate}
                 </p>
                 <Field>
                   <FieldLabel htmlFor="threshold-moderate">Upper Limit</FieldLabel>
@@ -291,25 +467,28 @@ export default function SettingsPage() {
                     type="number"
                     min="1"
                     max="100"
-                    value={workloadThresholds.moderate}
+                    value={settings.workloadThresholds.moderate}
                     onChange={(e) =>
-                      setWorkloadThresholds({
-                        ...workloadThresholds,
-                        moderate: parseInt(e.target.value) || 25,
-                      })
+                      setSettings((prev) => ({
+                        ...prev,
+                        workloadThresholds: {
+                          ...prev.workloadThresholds,
+                          moderate: parseInt(e.target.value) || 25,
+                        },
+                      }))
                     }
                     className="bg-secondary border-border"
                   />
                 </Field>
               </div>
 
-              <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/30">
-                <div className="flex items-center gap-2 mb-3">
+              <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4">
+                <div className="mb-3 flex items-center gap-2">
                   <div className="h-3 w-3 rounded-full bg-red-500" />
                   <span className="font-medium text-red-400">Overloaded</span>
                 </div>
-                <p className="text-sm text-muted-foreground mb-2">
-                  Weight range: {workloadThresholds.moderate + 1}+
+                <p className="mb-2 text-sm text-muted-foreground">
+                  Weight range: {settings.workloadThresholds.moderate + 1}+
                 </p>
                 <p className="text-xs text-muted-foreground">
                   Any weight above the moderate threshold
@@ -319,7 +498,6 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        {/* Weight Formula Reference */}
         <Card className="bg-card border-border lg:col-span-2">
           <CardHeader>
             <CardTitle className="text-lg">Weight Calculation Formula</CardTitle>
@@ -328,14 +506,14 @@ export default function SettingsPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="p-4 rounded-lg bg-muted/50 font-mono text-sm">
+            <div className="rounded-lg bg-muted/50 p-4 font-mono text-sm">
               <p className="text-foreground">
-                Weight = Effort (hours) × Complexity Multiplier × Priority Multiplier
+                Weight = Effort (hours) x Complexity Multiplier x Priority Multiplier
               </p>
-              <p className="text-muted-foreground mt-2">
-                Example: 8 hours × {complexityMultipliers.medium} (medium) ×{' '}
-                {priorityMultipliers.high} (high) ={' '}
-                {(8 * complexityMultipliers.medium * priorityMultipliers.high).toFixed(1)} weight
+              <p className="mt-2 text-muted-foreground">
+                Example: 8 hours x {settings.complexityMultipliers.medium} (medium) x{' '}
+                {settings.priorityMultipliers.high} (high) ={' '}
+                {(8 * settings.complexityMultipliers.medium * settings.priorityMultipliers.high).toFixed(1)} weight
               </p>
             </div>
           </CardContent>

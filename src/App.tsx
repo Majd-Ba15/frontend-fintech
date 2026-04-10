@@ -10,6 +10,7 @@ import TeamsPage from '@/app/dashboard/teams/page'
 import NewTeamPage from '@/app/dashboard/teams/new/page'
 import TeamPage from '@/app/dashboard/team/page'
 import TeamDetailPage from '@/app/dashboard/team/[id]/page'
+import TeamSkillsPage from '@/app/dashboard/team/skills/page'
 import UsersPage from '@/app/dashboard/users/page'
 import NewUserPage from '@/app/dashboard/users/new/page'
 import SettingsPage from '@/app/dashboard/settings/page'
@@ -31,6 +32,7 @@ export default function App() {
         <Route path="teams/new" element={<NewTeamPage />} />
         <Route path="team" element={<TeamPage />} />
         <Route path="team/:id" element={<TeamDetailPage />} />
+        <Route path="team/skills" element={<TeamSkillsPage />} />
         <Route path="users" element={<UsersPage />} />
         <Route path="users/new" element={<NewUserPage />} />
         <Route path="settings" element={<SettingsPage />} />

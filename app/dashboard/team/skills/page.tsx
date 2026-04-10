@@ -1,12 +1,14 @@
-import { useState, useEffect } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { useAuth } from '@/lib/auth-context';
-import { getTeams, getTeamById } from '@/lib/api';
-import { extractArray, getTeamLeaderId, getTeamMembers } from '@/lib/utils';
-import { SkillLevel, getSkillLevelBadgeText, getSkillLevelColor } from '@/lib/types';
-import { ArrowLeft, Save } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { ArrowLeft, Save } from 'lucide-react';
+
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { useAuth } from '@/lib/auth-context';
+import { getTeamById, getTeams, getUserById } from '@/lib/api';
+import { loadTeamSkills, saveTeamSkills } from '@/lib/team-skills-storage';
+import { SkillLevel, getSkillLevelBadgeText, getSkillLevelColor } from '@/lib/types';
+import { extractArray, getTeamLeaderId, getTeamMemberIds, getTeamMembers } from '@/lib/utils';
 
 export default function TeamSkillsPage() {
   const { user } = useAuth();
@@ -29,53 +31,110 @@ export default function TeamSkillsPage() {
       try {
         const teamsRes = await getTeams();
         const teamsData = extractArray<any>(teamsRes);
-        const currentTeam = teamsData.find(
-          (t: any) => String(getTeamLeaderId(t)) === String(user?.id)
+        let currentTeam = teamsData.find(
+          (team: any) => String(getTeamLeaderId(team)) === String(user.id)
         );
+
+        if (!currentTeam) {
+          currentTeam = teamsData.find((team: any) =>
+            getTeamMemberIds(team).includes(String(user.id))
+          );
+        }
+
+        if (!currentTeam && user.email) {
+          currentTeam = teamsData.find((team: any) => {
+            const leaderEmail = String(
+              team?.leader?.email ?? team?.teamLeader?.email ?? getTeamLeaderId(team) ?? ''
+            ).toLowerCase();
+            return leaderEmail === String(user.email).toLowerCase();
+          });
+        }
+
+        if (!currentTeam && user.teamId) {
+          currentTeam = teamsData.find((team: any) => String(team.id) === String(user.teamId));
+        }
 
         if (!currentTeam?.id) {
           throw new Error('Team not found');
         }
 
-        // Fetch full team details with member information
         const teamDetailsRes = await getTeamById(String(currentTeam.id));
         const teamDetails = teamDetailsRes?.data || teamDetailsRes || currentTeam;
+        const members = getTeamMembers(teamDetails);
+        const memberIds = Array.from(
+          new Set([
+            ...members.map((member) => String(member.id)),
+            ...getTeamMemberIds(teamDetails),
+          ].filter(Boolean))
+        );
 
-        // Extract real team members from the backend response
-        let members = getTeamMembers(teamDetails);
+        const missingIds = memberIds.filter(
+          (memberId) => !members.some((member) => String(member.id) === memberId)
+        );
 
-        if (members.length === 0) {
+        const fetchedMembers = await Promise.allSettled(
+          missingIds.map(async (memberId) => {
+            try {
+              const userData = await getUserById(memberId);
+              return Array.isArray(userData) ? userData[0] : userData?.data || userData;
+            } catch {
+              return null;
+            }
+          })
+        );
+
+        const resolvedMembers = fetchedMembers
+          .filter(
+            (result): result is PromiseFulfilledResult<any> =>
+              result.status === 'fulfilled' && !!result.value
+          )
+          .map((result) => result.value);
+
+        const populatedMembers = memberIds.map((memberId) => {
+          const existing = members.find((member) => String(member.id) === memberId);
+          const fetched = resolvedMembers.find((member) => String(member.id) === memberId);
+
+          return {
+            id: memberId,
+            name:
+              existing?.name ||
+              fetched?.name ||
+              fetched?.fullName ||
+              `Team Member ${String(memberId).slice(0, 5)}`,
+            email:
+              existing?.email ||
+              fetched?.email ||
+              `member-${String(memberId).slice(0, 5)}@company.com`,
+            role: existing?.role || fetched?.role || 'member',
+            teamId: existing?.teamId || fetched?.teamId || currentTeam.id,
+          };
+        });
+
+        if (populatedMembers.length === 0) {
           throw new Error('No team members found');
         }
 
-        // Ensure consistent member data
-        const populatedMembers = members.map((member) => ({
-          ...member,
-          name: member.name || `Team Member ${String(member.id).substring(0, 5)}`,
-          email: member.email || `member-${String(member.id).substring(0, 5)}@company.com`,
-          role: member.role || 'member',
-          teamId: member.teamId || currentTeam?.id,
-        }));
+        if (!active) return;
 
-        if (active) {
-          setTeamMembers(populatedMembers);
-          // Load skills from localStorage
-          const savedSkills = localStorage.getItem('teamSkills');
-          const skillsMap = savedSkills ? JSON.parse(savedSkills) : {};
-          
-          populatedMembers.forEach((member: any) => {
-            if (!skillsMap[member.id]) {
-              skillsMap[member.id] = undefined;
-            }
-          });
-          setSkills(skillsMap);
-        }
+        const storedSkills = loadTeamSkills();
+        const skillsMap = { ...storedSkills };
+
+        populatedMembers.forEach((member: any) => {
+          if (!(member.id in skillsMap)) {
+            skillsMap[member.id] = undefined;
+          }
+        });
+
+        setTeamMembers(populatedMembers);
+        setSkills(skillsMap);
       } catch (err: any) {
         if (active) {
           setError(err?.message || 'Unable to load team members.');
         }
       } finally {
-        if (active) setLoading(false);
+        if (active) {
+          setLoading(false);
+        }
       }
     }
 
@@ -96,9 +155,8 @@ export default function TeamSkillsPage() {
     setSuccess(null);
 
     try {
-      // Store skills in localStorage
-      localStorage.setItem('teamSkills', JSON.stringify(skills));
-      setSuccess('Skill levels saved successfully to local storage!');
+      saveTeamSkills(skills);
+      setSuccess('Skill levels saved successfully to local storage.');
     } catch (err: any) {
       setError(err?.message || 'Failed to save skill levels.');
     } finally {
@@ -110,7 +168,6 @@ export default function TeamSkillsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-center gap-4">
         <Button variant="ghost" size="sm" onClick={() => navigate(-1)}>
           <ArrowLeft className="h-4 w-4" />
@@ -121,28 +178,27 @@ export default function TeamSkillsPage() {
         </div>
       </div>
 
-      {/* Legend */}
       <Card className="bg-card border-border">
         <CardHeader>
           <CardTitle className="text-sm">Skill Levels</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             <div className="flex items-center gap-3">
-              <span className={`px-3 py-1 rounded text-sm ${getSkillLevelColor('junior')}`}>
-                👶 Junior
+              <span className={`rounded px-3 py-1 text-sm ${getSkillLevelColor('junior')}`}>
+                {getSkillLevelBadgeText('junior')}
               </span>
               <p className="text-sm text-muted-foreground">Simple tasks only</p>
             </div>
             <div className="flex items-center gap-3">
-              <span className={`px-3 py-1 rounded text-sm ${getSkillLevelColor('mid')}`}>
-                💼 Mid-level
+              <span className={`rounded px-3 py-1 text-sm ${getSkillLevelColor('mid')}`}>
+                {getSkillLevelBadgeText('mid')}
               </span>
-              <p className="text-sm text-muted-foreground">Simple + Medium tasks</p>
+              <p className="text-sm text-muted-foreground">Simple + medium tasks</p>
             </div>
             <div className="flex items-center gap-3">
-              <span className={`px-3 py-1 rounded text-sm ${getSkillLevelColor('senior')}`}>
-                ⭐ Senior
+              <span className={`rounded px-3 py-1 text-sm ${getSkillLevelColor('senior')}`}>
+                {getSkillLevelBadgeText('senior')}
               </span>
               <p className="text-sm text-muted-foreground">Any complexity</p>
             </div>
@@ -150,7 +206,6 @@ export default function TeamSkillsPage() {
         </CardContent>
       </Card>
 
-      {/* Team Members */}
       <Card className="bg-card border-border">
         <CardHeader>
           <CardTitle>Team Members</CardTitle>
@@ -158,15 +213,15 @@ export default function TeamSkillsPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           {loading ? (
-            <p className="text-muted-foreground text-center py-8">Loading team members...</p>
+            <p className="py-8 text-center text-muted-foreground">Loading team members...</p>
           ) : teamMembers.length === 0 ? (
-            <p className="text-muted-foreground text-center py-8">No team members found</p>
+            <p className="py-8 text-center text-muted-foreground">No team members found</p>
           ) : (
             <div className="space-y-3">
               {teamMembers.map((member) => (
                 <div
                   key={member.id}
-                  className="flex items-center justify-between p-4 rounded-lg border border-border bg-secondary/30 hover:bg-secondary/50 transition-colors"
+                  className="flex items-center justify-between rounded-lg border border-border bg-secondary/30 p-4 transition-colors hover:bg-secondary/50"
                 >
                   <div>
                     <p className="font-medium text-foreground">{member.name}</p>
@@ -175,18 +230,18 @@ export default function TeamSkillsPage() {
                   <div className="flex items-center gap-2">
                     <select
                       value={skills[member.id] || ''}
-                      onChange={(e) =>
+                      onChange={(event) =>
                         handleSkillChange(
                           member.id,
-                          (e.target.value as SkillLevel) || undefined
+                          (event.target.value as SkillLevel) || undefined
                         )
                       }
-                      className="h-10 px-3 rounded-md bg-secondary border border-border text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-10 rounded-md border border-border bg-secondary px-3 text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                     >
                       <option value="">Unassigned</option>
-                      <option value="junior">👶 Junior</option>
-                      <option value="mid">💼 Mid-level</option>
-                      <option value="senior">⭐ Senior</option>
+                      <option value="junior">{getSkillLevelBadgeText('junior')}</option>
+                      <option value="mid">{getSkillLevelBadgeText('mid')}</option>
+                      <option value="senior">{getSkillLevelBadgeText('senior')}</option>
                     </select>
                   </div>
                 </div>
@@ -196,50 +251,37 @@ export default function TeamSkillsPage() {
         </CardContent>
       </Card>
 
-      {/* Messages */}
       {error && (
-        <Card className="bg-destructive/10 border-destructive/30">
+        <Card className="border-destructive/30 bg-destructive/10">
           <CardContent className="pt-6">
-            <p className="text-destructive text-sm">{error}</p>
+            <p className="text-sm text-destructive">{error}</p>
           </CardContent>
         </Card>
       )}
 
       {success && (
-        <Card className="bg-emerald-500/10 border-emerald-500/30">
+        <Card className="border-emerald-500/30 bg-emerald-500/10">
           <CardContent className="pt-6">
-            <p className="text-emerald-400 text-sm">{success}</p>
+            <p className="text-sm text-emerald-400">{success}</p>
           </CardContent>
         </Card>
       )}
 
-      {/* Save Button */}
       <div className="flex justify-end gap-3">
-        <Button
-          variant="outline"
-          onClick={() => navigate(-1)}
-        >
+        <Button variant="outline" onClick={() => navigate(-1)}>
           Cancel
         </Button>
-        <Button
-          onClick={handleSave}
-          disabled={saving}
-          className="gap-2"
-        >
+        <Button onClick={handleSave} disabled={saving} className="gap-2">
           <Save className="h-4 w-4" />
           {saving ? 'Saving...' : 'Save Skill Levels'}
         </Button>
       </div>
 
-      {/* Note */}
-      <Card className="bg-amber-500/10 border-amber-500/30">
+      <Card className="border-amber-500/30 bg-amber-500/10">
         <CardContent className="pt-6">
-          <p className="text-amber-400 text-sm">
-            <strong>Note:</strong> This feature uses local storage for now. To persist changes:
-            <br />
-            1. Create an <code>/api/users/{'{id}'}</code> PUT endpoint to update skill levels
-            <br />
-            2. Update the <code>handleSave</code> function to call the API
+          <p className="text-sm text-amber-400">
+            <strong>Note:</strong> This page stores skills in local storage for now, so no
+            backend skills API is required.
           </p>
         </CardContent>
       </Card>

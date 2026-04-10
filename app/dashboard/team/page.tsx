@@ -13,7 +13,7 @@ import {
   getWorkloadColor,
   getWorkloadBgColor,
 } from '@/lib/types';
-import { Users, ChevronRight, Mail, Calendar } from 'lucide-react';
+import { Users, Mail, Calendar } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 type WeekView = 'this_week' | 'next_week';
@@ -24,6 +24,7 @@ export default function TeamPage() {
   const [teams, setTeams] = useState<any[]>([]);
   const [tasks, setTasks] = useState<any[]>([]);
   const [team, setTeam] = useState<any | null>(null);
+  const [teamLeader, setTeamLeader] = useState<any | null>(null);
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [weekTasks, setWeekTasks] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -80,6 +81,39 @@ export default function TeamPage() {
           : teamToUse;
 
         if (active) setTeam(teamDetails || null);
+
+        const rawLeader =
+          teamDetails?.leader ??
+          teamDetails?.teamLeader ??
+          null;
+        const leaderId = String(getTeamLeaderId(teamDetails) || '').trim();
+        let resolvedLeader = rawLeader;
+
+        if ((!resolvedLeader || typeof resolvedLeader !== 'object') && leaderId) {
+          try {
+            const leaderRes = await getUserById(leaderId);
+            resolvedLeader = Array.isArray(leaderRes) ? leaderRes[0] : leaderRes?.data || leaderRes;
+          } catch {
+            resolvedLeader = { id: leaderId };
+          }
+        }
+
+        if (active) {
+          setTeamLeader(
+            resolvedLeader
+              ? {
+                  id: String(resolvedLeader.id ?? resolvedLeader._id ?? leaderId ?? ''),
+                  name:
+                    resolvedLeader.name ??
+                    resolvedLeader.fullName ??
+                    resolvedLeader.full_name ??
+                    (leaderId ? `Leader ${leaderId.slice(0, 5)}` : 'Not assigned'),
+                  email: resolvedLeader.email ?? '',
+                }
+              : null
+          );
+        }
+
         let members = getTeamMembers(teamDetails);
         const memberIds = Array.from(
           new Set([
@@ -242,6 +276,40 @@ export default function TeamPage() {
         </CardContent>
       </Card>
 
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <Card className="bg-card border-border">
+          <CardHeader>
+            <CardTitle className="text-lg">Team Overview</CardTitle>
+            <CardDescription>Basic information for this team</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">Team name</span>
+              <span className="text-sm font-medium text-foreground">{team?.name || 'Your Team'}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">Members</span>
+              <span className="text-sm font-medium text-foreground">{teamMembers.length}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">Weekly tasks</span>
+              <span className="text-sm font-medium text-foreground">{weekTasks.length}</span>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-card border-border">
+          <CardHeader>
+            <CardTitle className="text-lg">Team Leader</CardTitle>
+            <CardDescription>Leader shown without opening a separate page</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <p className="font-medium text-foreground">{teamLeader?.name || 'Not assigned'}</p>
+            <p className="text-sm text-muted-foreground">{teamLeader?.email || 'No email available'}</p>
+          </CardContent>
+        </Card>
+      </div>
+
       {/* Member Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {memberWorkloads.map(({ member, tasks, allTasks, totalWeight, totalEffort, status }) => (
@@ -334,13 +402,6 @@ export default function TeamPage() {
                   <p className="text-sm text-muted-foreground">No tasks this week</p>
                 )}
               </div>
-
-              <Link to={`/dashboard/team/${member.id}`}>
-                <Button variant="outline" className="w-full">
-                  View Details
-                  <ChevronRight className="h-4 w-4 ml-2" />
-                </Button>
-              </Link>
             </CardContent>
           </Card>
         ))}

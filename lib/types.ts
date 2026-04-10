@@ -1,15 +1,11 @@
-// User Roles
 export type UserRole = 'admin' | 'team_leader' | 'member';
 
-// Task Priority and Complexity
 export type TaskPriority = 'low' | 'medium' | 'high' | 'critical';
 export type TaskComplexity = 'simple' | 'medium' | 'complex';
 export type TaskStatus = 'new' | 'in_progress' | 'blocked' | 'done';
 
-// Skill Levels
 export type SkillLevel = 'junior' | 'mid' | 'senior';
 
-// User interface
 export interface User {
   id: string;
   name: string;
@@ -20,7 +16,6 @@ export interface User {
   avatar?: string;
 }
 
-// Team interface
 export interface Team {
   id: string;
   name: string;
@@ -28,7 +23,6 @@ export interface Team {
   memberIds: string[];
 }
 
-// Task interface
 export interface Task {
   id: string;
   title: string;
@@ -36,7 +30,7 @@ export interface Task {
   assignedMemberId: string;
   priority: TaskPriority;
   complexity: TaskComplexity;
-  estimatedEffort: number; // in hours
+  estimatedEffort: number;
   startDate: string;
   dueDate: string;
   status: TaskStatus;
@@ -47,7 +41,6 @@ export interface Task {
   createdBy: string;
 }
 
-// Change Request
 export type ChangeRequestType = 'owner_change' | 'due_date_change' | 'effort_increase';
 export type ChangeRequestStatus = 'pending' | 'approved' | 'rejected';
 
@@ -65,7 +58,6 @@ export interface ChangeRequest {
   createdAt: string;
 }
 
-// Multipliers for weight calculation
 export const COMPLEXITY_MULTIPLIERS: Record<TaskComplexity, number> = {
   simple: 1.0,
   medium: 1.5,
@@ -79,7 +71,6 @@ export const PRIORITY_MULTIPLIERS: Record<TaskPriority, number> = {
   critical: 2.0,
 };
 
-// Calculate task weight
 export function calculateTaskWeight(task: Task): number {
   return (
     task.estimatedEffort *
@@ -88,7 +79,6 @@ export function calculateTaskWeight(task: Task): number {
   );
 }
 
-// Workload status thresholds
 export type WorkloadStatus = 'available' | 'moderate' | 'overloaded';
 
 export function getWorkloadStatus(totalWeight: number): WorkloadStatus {
@@ -126,16 +116,18 @@ export function normalizeUserRole(role?: string): UserRole {
   return 'member';
 }
 
-// Skill level matching with task complexity
-export function isSkillLevelMatch(skillLevel: SkillLevel | undefined, complexity: TaskComplexity): boolean {
-  if (!skillLevel) return true; // Unassigned skill can do any task
-  
+export function isSkillLevelMatch(
+  skillLevel: SkillLevel | undefined,
+  complexity: TaskComplexity
+): boolean {
+  if (!skillLevel) return true;
+
   const matches: Record<SkillLevel, TaskComplexity[]> = {
     junior: ['simple'],
     mid: ['simple', 'medium'],
     senior: ['simple', 'medium', 'complex'],
   };
-  
+
   return matches[skillLevel].includes(complexity);
 }
 
@@ -155,11 +147,11 @@ export function getSkillLevelColor(skillLevel: SkillLevel | undefined): string {
 export function getSkillLevelBadgeText(skillLevel: SkillLevel | undefined): string {
   switch (skillLevel) {
     case 'junior':
-      return '👶 Junior';
+      return 'Junior';
     case 'mid':
-      return '💼 Mid-level';
+      return 'Mid-level';
     case 'senior':
-      return '⭐ Senior';
+      return 'Senior';
     default:
       return 'Unknown';
   }
@@ -167,18 +159,21 @@ export function getSkillLevelBadgeText(skillLevel: SkillLevel | undefined): stri
 
 export type ComplexityMatchStatus = 'perfect' | 'capable' | 'overqualified' | 'under-skilled';
 
-export function getComplexityMatch(skillLevel: SkillLevel | undefined, complexity: TaskComplexity): ComplexityMatchStatus {
+export function getComplexityMatch(
+  skillLevel: SkillLevel | undefined,
+  complexity: TaskComplexity
+): ComplexityMatchStatus {
   if (!skillLevel) return 'capable';
-  
+
   const skillRank: Record<SkillLevel, number> = { junior: 1, mid: 2, senior: 3 };
   const complexityRank: Record<TaskComplexity, number> = { simple: 1, medium: 2, complex: 3 };
-  
+
   const skill = skillRank[skillLevel];
   const comp = complexityRank[complexity];
-  
+
   if (skill === comp) return 'perfect';
   if (skill > comp) return 'overqualified';
-  if (skill < comp + 1) return 'capable'; // one level above is ok
+  if (skill < comp + 1) return 'capable';
   return 'under-skilled';
 }
 
