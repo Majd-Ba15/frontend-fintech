@@ -194,9 +194,10 @@ export default function TeamPage() {
   // Calculate workload per member
   const memberWorkloads = teamMembers.map((member) => {
     const memberTasks = weekTasks.filter((t) => t.assignedMemberId === member.id);
+    const activeTasks = memberTasks.filter((t) => t.status !== 'done');
     const allMemberTasks = tasks.filter((t) => t.assignedMemberId === member.id);
-    const totalWeight = memberTasks.reduce((sum, task) => sum + calculateTaskWeight(task), 0);
-    const totalEffort = memberTasks.reduce((sum, task) => sum + task.estimatedEffort, 0);
+    const totalWeight = activeTasks.reduce((sum, task) => sum + calculateTaskWeight(task), 0);
+    const totalEffort = activeTasks.reduce((sum, task) => sum + task.estimatedEffort, 0);
     const status = getWorkloadStatus(totalWeight);
 
     return {
